@@ -15,14 +15,6 @@ filters:
 - type: citeproc
 top-level-division: chapter
 number-sections: false
-number-offset:
-- 0
-- 0
-- 0
-- 0
-- 0
-- 0
-shift-heading-level-by: 1
 section-divs: true
 identifier-prefix: ''
 eol: lf

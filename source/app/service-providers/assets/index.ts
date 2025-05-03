@@ -18,11 +18,11 @@ import { app, ipcMain, shell } from 'electron'
 import { promises as fs } from 'fs'
 import YAML from 'yaml'
 import broadcastIpcMessage from '@common/util/broadcast-ipc-message'
-import ProviderContract from '../provider-contract'
+import ProviderContract, { type IPCAPI } from '../provider-contract'
 import type LogProvider from '../log'
 import { getCustomProfiles } from '@providers/commands/exporter'
-import getPlainPandocReaderWriter from '@common/util/plain-pandoc-reader-writer'
-import { SUPPORTED_READERS } from '@common/util/pandoc-maps'
+import { SUPPORTED_READERS } from '@common/pandoc-util/pandoc-maps'
+import { parseReaderWriter } from '@common/pandoc-util/parse-reader-writer'
 
 export interface PandocProfileMetadata {
   /**
@@ -52,6 +52,22 @@ export interface PandocProfileMetadata {
    */
   isProtected?: boolean
 }
+
+export type AssetsProviderIPCAPI = IPCAPI<{
+  'get-defaults-file': { filename: string }
+  'set-defaults-file': { filename: string, contents: string }
+  'rename-defaults-file': { oldName: string, newName: string }
+  'remove-defaults-file': { filename: string }
+  'get-snippet': { name: string }
+  'remove-snippet': { name: string }
+  'rename-snippet': { name: string, newName: string }
+  'set-snippet': { name: string, contents: string }
+  'list-defaults': unknown
+  'list-export-profiles': unknown
+  'open-defaults-directory': unknown
+  'open-snippets-directory': unknown
+  'list-snippets': unknown
+}>
 
 export default class AssetsProvider extends ProviderContract {
   /**
@@ -90,7 +106,8 @@ export default class AssetsProvider extends ProviderContract {
     this._filterPath = path.join(app.getPath('userData'), '/lua-filter')
     this._protectedDefaults = []
 
-    ipcMain.handle('assets-provider', async (event, { command, payload }) => {
+    ipcMain.handle('assets-provider', async (event, message: AssetsProviderIPCAPI) => {
+      const { command, payload } = message
       // These function calls, however, treat the defaults files verbatim to
       // retain comments. NOTE: This means that any *renderer* will always
       // receive the text, not an Object. Renderers who need to work with the
@@ -320,8 +337,8 @@ export default class AssetsProvider extends ProviderContract {
         // reader or writer must be a supported Markdown format.
         const hasWriter = yaml.writer !== undefined
         const hasReader = yaml.reader !== undefined
-        const validWriter = hasWriter && SUPPORTED_READERS.includes(getPlainPandocReaderWriter(yaml.writer))
-        const validReader = hasReader && SUPPORTED_READERS.includes(getPlainPandocReaderWriter(yaml.reader))
+        const validWriter = hasWriter && SUPPORTED_READERS.includes(parseReaderWriter(yaml.writer).name)
+        const validReader = hasReader && SUPPORTED_READERS.includes(parseReaderWriter(yaml.reader).name)
 
         profiles.push({
           name: file,

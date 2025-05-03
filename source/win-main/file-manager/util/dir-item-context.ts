@@ -16,6 +16,7 @@ import { trans } from '@common/i18n-renderer'
 import showPopupMenu from '@common/modules/window-register/application-menu-helper'
 import type { DirDescriptor } from '@dts/common/fsal'
 import type { AnyMenuItem } from '@dts/renderer/context'
+import type { WindowControlsIPCAPI } from 'source/app/service-providers/windows'
 
 const ipcRenderer = window.ipc
 
@@ -34,7 +35,7 @@ export function displayDirContext (event: MouseEvent, dirObject: DirDescriptor, 
       type: 'separator'
     },
     {
-      label: trans('New File…'),
+      label: trans('New file…'),
       type: 'normal',
       id: 'menu.new_file',
       enabled: true
@@ -113,7 +114,7 @@ export function displayDirContext (event: MouseEvent, dirObject: DirDescriptor, 
     template.push({
       id: 'menu.close_workspace',
       type: 'normal',
-      label: trans('Close Workspace'),
+      label: trans('Close workspace'),
       enabled: true
     })
   }
@@ -128,8 +129,8 @@ export function displayDirContext (event: MouseEvent, dirObject: DirDescriptor, 
       case 'gui.attachments_open_dir':
         ipcRenderer.send('window-controls', {
           command: 'show-item-in-folder',
-          payload: dirObject.path
-        })
+          payload: { itemPath: dirObject.path }
+        } as WindowControlsIPCAPI)
         break
       case 'menu.project_build':
         ipcRenderer.send('message', {

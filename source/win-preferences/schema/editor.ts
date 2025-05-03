@@ -69,32 +69,32 @@ export function getEditorFields (config: ConfigOptions): PreferencesFieldset[] {
           fields: [
             {
               type: 'checkbox',
-              label: trans('Render Citations'),
+              label: trans('Render citations'),
               model: 'display.renderCitations'
             },
             {
               type: 'checkbox',
-              label: trans('Render Iframes'),
+              label: trans('Render iframes'),
               model: 'display.renderIframes'
             },
             {
               type: 'checkbox',
-              label: trans('Render Images'),
+              label: trans('Render images'),
               model: 'display.renderImages'
             },
             {
               type: 'checkbox',
-              label: trans('Render Links'),
+              label: trans('Render links'),
               model: 'display.renderLinks'
             },
             {
               type: 'checkbox',
-              label: trans('Render Formulae'),
+              label: trans('Render formulae'),
               model: 'display.renderMath'
             },
             {
               type: 'checkbox',
-              label: trans('Render Tasks'),
+              label: trans('Render tasks'),
               model: 'display.renderTasks'
             },
             {
@@ -113,7 +113,7 @@ export function getEditorFields (config: ConfigOptions): PreferencesFieldset[] {
         {
           type: 'form-text',
           display: 'sub-heading',
-          contents: trans('Formatting characters for bold and italic')
+          contents: trans('Formatting characters for bold and italics')
         },
         {
           type: 'style-group',
@@ -173,7 +173,7 @@ export function getEditorFields (config: ConfigOptions): PreferencesFieldset[] {
         },
         {
           type: 'checkbox',
-          label: trans('Hide toolbar in distraction free mode'),
+          label: trans('Hide toolbar in distraction-free mode'),
           model: 'display.hideToolbarInDistractionFree'
         }
       ]
@@ -256,6 +256,11 @@ export function getEditorFields (config: ConfigOptions): PreferencesFieldset[] {
           model: 'editor.indentWithTabs'
         },
         { type: 'separator' },
+        {
+          type: 'checkbox',
+          label: trans('Show formatting toolbar when text is selected'),
+          model: 'editor.showFormattingToolbar'
+        },
         {
           type: 'checkbox',
           label: trans('Highlight whitespace'),

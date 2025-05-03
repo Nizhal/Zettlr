@@ -2,6 +2,7 @@
   <SplitView
     v-bind:initial-size-percent="[ 20, 80 ]"
     v-bind:minimum-size-percent="[ 20, 20 ]"
+    v-bind:reset-size-percent="[ 20, 80 ]"
     v-bind:split="'horizontal'"
     v-bind:initial-total-width="100"
   >
@@ -93,11 +94,11 @@ import CodeEditor from '@common/vue/CodeEditor.vue'
 import ZtrAdmonition from '@common/vue/ZtrAdmonition.vue'
 import { trans } from '@common/i18n-renderer'
 import { ref, computed, toRef, watch, onUnmounted } from 'vue'
-import { type PandocProfileMetadata } from '@providers/assets'
-import { PANDOC_READERS, PANDOC_WRITERS, SUPPORTED_READERS } from '@common/util/pandoc-maps'
+import type { AssetsProviderIPCAPI, PandocProfileMetadata } from '@providers/assets'
+import { PANDOC_READERS, PANDOC_WRITERS, SUPPORTED_READERS } from '@common/pandoc-util/pandoc-maps'
 import sanitizeFilename from 'sanitize-filename'
-import getPlainPandocReaderWriter from '@common/util/plain-pandoc-reader-writer'
 import { DateTime } from 'luxon'
+import { parseReaderWriter } from 'source/common/pandoc-util/parse-reader-writer'
 
 const ipcRenderer = window.ipc
 
@@ -141,7 +142,8 @@ const visibleItems = computed(() => {
       }
       // Retrieve which one we need to check
       const readerWriter = (props.which === 'import') ? e.writer : e.reader
-      return SUPPORTED_READERS.includes(getPlainPandocReaderWriter(readerWriter))
+      const parsedReaderWriter = parseReaderWriter(readerWriter)
+      return SUPPORTED_READERS.includes(parsedReaderWriter.name)
     })
 })
 
@@ -149,8 +151,10 @@ const listItems = computed<SelectableListItem[]>(() => {
   return visibleItems.value
     .map(file => {
       // Try to resolve known and fully supported extensions
-      const reader = file.reader in PANDOC_READERS ? PANDOC_READERS[file.reader] : file.reader
-      const writer = file.writer in PANDOC_WRITERS ? PANDOC_WRITERS[file.writer] : file.writer
+      const parsedReader = parseReaderWriter(file.reader)
+      const parsedWriter = parseReaderWriter(file.writer)
+      const reader = parsedReader.name in PANDOC_READERS ? PANDOC_READERS[parsedReader.name] : parsedReader.name
+      const writer = parsedWriter.name in PANDOC_WRITERS ? PANDOC_WRITERS[parsedWriter.name] : parsedWriter.name
       const infoString = (file.isInvalid) ? 'Invalid' : [ reader, writer ].join(' → ')
 
       return {
@@ -219,7 +223,7 @@ async function loadDefaultsForState (): Promise<void> {
   const data = await ipcRenderer.invoke('assets-provider', {
     command: 'get-defaults-file',
     payload: { filename: name }
-  })
+  } as AssetsProviderIPCAPI)
 
   lastLoadedEditorContents.value = data
   editorContents.value = data
@@ -233,7 +237,7 @@ async function retrieveDefaultsFiles (): Promise<void> {
   // does not work with the custom profiles the exporter provides).
   ipcRenderer.invoke('assets-provider', {
     command: 'list-defaults'
-  })
+  } as AssetsProviderIPCAPI)
     .then((files: PandocProfileMetadata[]) => {
       availableDefaultsFiles.value = files
       if (currentItem.value < 0) {
@@ -252,7 +256,7 @@ function saveDefaultsFile (): void {
   ipcRenderer.invoke('assets-provider', {
     command: 'set-defaults-file',
     payload: { filename: name, contents: editorContents.value }
-  })
+  } as AssetsProviderIPCAPI)
     .then(async () => {
       lastLoadedEditorContents.value = editorContents.value
       savingStatus.value = trans('Saved!')
@@ -274,7 +278,7 @@ function newDefaultsFile (): void {
   ipcRenderer.invoke('assets-provider', {
     command: 'set-defaults-file',
     payload: { filename: newName, contents: NEW_DEFAULTS_FILE_CONTENTS }
-  })
+  } as AssetsProviderIPCAPI)
     .then(async () => {
       await retrieveDefaultsFiles() // Always make sure to pull in any changes
     })
@@ -294,7 +298,7 @@ function renameFile (): void {
   ipcRenderer.invoke('assets-provider', {
     command: 'rename-defaults-file',
     payload: { oldName, newName }
-  })
+  } as AssetsProviderIPCAPI)
     .then(async () => {
       await retrieveDefaultsFiles() // Always make sure to pull in any changes
     })
@@ -311,7 +315,7 @@ function removeFile (idx: number): void {
   ipcRenderer.invoke('assets-provider', {
     command: 'remove-defaults-file',
     payload: { filename }
-  })
+  } as AssetsProviderIPCAPI)
     .then(async () => {
       await retrieveDefaultsFiles() // Always make sure to pull in any changes
     })
@@ -321,7 +325,7 @@ function removeFile (idx: number): void {
 function openDefaultsDirectory (): void {
   ipcRenderer.invoke('assets-provider', {
     command: 'open-defaults-directory'
-  }).catch(err => console.error(err))
+  } as AssetsProviderIPCAPI).catch(err => console.error(err))
 }
 </script>
 

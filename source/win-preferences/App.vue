@@ -13,13 +13,14 @@
     <SplitView
       v-bind:initial-size-percent="[ 20, 80 ]"
       v-bind:minimum-size-percent="[ 20, 20 ]"
+      v-bind:reset-size-percent="[ 20, 80 ]"
       v-bind:split="'horizontal'"
       v-bind:initial-total-width="100"
     >
       <template #view1>
         <TextControl
           v-model="query"
-          v-bind:placeholder="'Find…'"
+          v-bind:placeholder="searchPlaceholder"
           v-bind:search-icon="true"
           v-bind:autofocus="true"
           v-bind:reset="true"
@@ -104,6 +105,7 @@ const appLangOptions = ref<Record<string, string>>({})
 const config = computed(() => configStore.config)
 
 const noResultsMessage = computed(() => trans('No results for "%s"', query.value))
+const searchPlaceholder = trans('Search')
 
 const schema = computed<FormSchema>(() => {
   return {
@@ -143,39 +145,44 @@ const fieldsets = computed<Fieldset[]>(() => {
 })
 
 const filteredFieldsets = computed(() => {
-  if (query.value !== '') {
-    const q = query.value.toLowerCase().trim()
-    return fieldsets.value.filter(f => {
-      // Match relevancy:
-      // 1. Search term is in card title
-      if (f.title.toLowerCase().includes(q)) {
-        return true
-      }
+  const q = query.value.toLowerCase().trim()
 
-      if (f.help?.toLowerCase().includes(q)) {
-        return true
-      }
-
-      for (const field of f.fields) {
-        if ('label' in field && field.label?.toLowerCase().includes(q)) {
-          return true
-        } else if ('info' in field && field.info?.toLowerCase().includes(q)) {
-          return true
-        } else if (field.type === 'radio' || field.type === 'select') {
-          for (const option in field.options) {
-            if (option.toLowerCase().includes(q)) {
-              return true
-            }
-          }
-        }
-      }
-      return false
-    })
-  } else {
+  if (q === '') {
     // No active search, so simply return the currently active group
     const activeGroup = groups.value[currentGroup.value].id
     return fieldsets.value.filter(f => f.group === activeGroup)
   }
+
+  return fieldsets.value.filter(f => {
+    // BUG: Somehow TypeScript (and ESLint!) knows that everything here works
+    // out but STILL insists on explicitly casting everything to boolean. I
+    // don't know why.
+
+    // Match relevancy:
+    // 1. Search term is in card title
+    if (Boolean(f.title.toLowerCase().includes(q))) {
+      return true
+    }
+
+    if (Boolean((f.help?.toLowerCase().includes(q)))) {
+      return true
+    }
+
+    for (const field of f.fields) {
+      if ('label' in field && (Boolean((field.label?.toLowerCase().includes(q))))) {
+        return true
+      } else if ('info' in field && (Boolean((field.info?.toLowerCase().includes(q))))) {
+        return true
+      } else if (field.type === 'radio' || field.type === 'select') {
+        for (const option in field.options) {
+          if (option.toLowerCase().includes(q)) {
+            return true
+          }
+        }
+      }
+    }
+    return false
+  })
 })
 
 const groups = computed<Array<SelectableListItem & { id: PreferencesGroups }>>(() => {
@@ -206,7 +213,7 @@ const groups = computed<Array<SelectableListItem & { id: PreferencesGroups }>>((
       id: PreferencesGroups.Spellchecking
     },
     {
-      displayText: trans('AutoCorrect'),
+      displayText: trans('Autocorrect'),
       icon: 'wand', // 'block-quote'
       id: PreferencesGroups.Autocorrect
     },

@@ -93,7 +93,7 @@ import FileList from './FileList.vue'
 import { trans } from '@common/i18n-renderer'
 import { nextTick, ref, computed, watch, onMounted } from 'vue'
 import { useConfigStore, useWorkspacesStore } from 'source/pinia'
-import type { AnyDescriptor, DirDescriptor } from 'source/types/common/fsal'
+import type { AnyDescriptor } from 'source/types/common/fsal'
 
 const ipcRenderer = window.ipc
 
@@ -118,7 +118,7 @@ const configStore = useConfigStore()
 const fileTree = computed<AnyDescriptor[]>(() => workspacesStore.roots.map(root => root.descriptor))
 const selectedDirectory = computed(() => configStore.config.openDirectory)
 
-const filterPlaceholder = trans('Filter …')
+const filterPlaceholder = trans('Filter…')
 const fileManagerMode = computed(() => configStore.config.fileManagerMode)
 const isThin = computed<boolean>(() => fileManagerMode.value === 'thin')
 const isCombined = computed<boolean>(() => fileManagerMode.value === 'combined')
@@ -126,7 +126,7 @@ const isExpanded = computed<boolean>(() => fileManagerMode.value === 'expanded')
 
 const isFileListVisible = computed<boolean>(() => isExpanded.value || fileListVisible.value)
 
-watch(selectedDirectory, (value, oldValue) => {
+watch(selectedDirectory, (value, _oldValue) => {
   // Reset the local search when a new directory has been selected
   filterQuery.value = ''
   // If the directory just got de-selected and the fileList

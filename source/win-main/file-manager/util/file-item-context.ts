@@ -16,6 +16,7 @@ import { trans } from '@common/i18n-renderer'
 import showPopupMenu from '@common/modules/window-register/application-menu-helper'
 import type { CodeFileDescriptor, MDFileDescriptor } from '@dts/common/fsal'
 import type { AnyMenuItem } from '@dts/renderer/context'
+import type { WindowControlsIPCAPI } from 'source/app/service-providers/windows'
 
 const ipcRenderer = window.ipc
 
@@ -25,7 +26,7 @@ export function displayFileContext (event: MouseEvent, fileObject: MDFileDescrip
 
   const template: AnyMenuItem[] = [
     {
-      label: trans('Open in a new tab'),
+      label: trans('Open in new tab'),
       id: 'new-tab',
       type: 'normal',
       enabled: true
@@ -47,15 +48,15 @@ export function displayFileContext (event: MouseEvent, fileObject: MDFileDescrip
       enabled: true
     },
     {
-      label: trans('Delete file'),
-      id: 'menu.delete_file',
-      accelerator: 'CmdOrCtrl+Backspace',
+      label: trans('Duplicate file'),
+      id: 'menu.duplicate_file',
       type: 'normal',
       enabled: true
     },
     {
-      label: trans('Duplicate file'),
-      id: 'menu.duplicate_file',
+      label: trans('Delete file'),
+      id: 'menu.delete_file',
+      accelerator: 'CmdOrCtrl+Backspace',
       type: 'normal',
       enabled: true
     },
@@ -120,8 +121,8 @@ export function displayFileContext (event: MouseEvent, fileObject: MDFileDescrip
       case 'menu.show_file':
         ipcRenderer.send('window-controls', {
           command: 'show-item-in-folder',
-          payload: fileObject.path
-        })
+          payload: { itemPath: fileObject.path }
+        } as WindowControlsIPCAPI)
         break
     }
   })
