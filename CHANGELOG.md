@@ -4,6 +4,9 @@
 
 - **Feature**: The code editors (in the assets manager and elsewhere) now share
   the same keymap as the main editor.
+- **Feature**: The image renderer now acknowledges and respects the presence of
+  a Pandoc link attributes string behind an image to scale images using custom
+  sizes (#1328).
 - **Change**: Removed some optional properties from the default profiles. If you
   want to switch to the new defaults, delete those files from the assets manager
   or rename your existing ones. Specifically, removed `top-level-division`,
@@ -20,7 +23,7 @@
   `{.mermaid}` class (#5734).
 - Fixed a keymap conflict that would cause `Enter` to not accept autocomplete
   suggestions in some contexts such as Markdown syntax elements (#5646).
-- Improved the math, mermaid, and heading renderers so that they perform
+- Improved the math, mermaid, image, and heading renderers so that they perform
   additional checks before actually updating their respective rendered elements.
   This should reduce the amount of flickering and unintentional scrolling
   especially in longer documents with many of such elements.
@@ -30,6 +33,7 @@
   `Cmd-Alt-[` (macOS) for folding code, `Ctrl-Shift-]` or `Cmd-Alt-]` for
   unfolding, `Ctrl-Alt-[` for folding all, and `Ctrl-Alt-]` for unfolding all.
 - Update `fr-FR` translation (#5738).
+- Update `cs-CZ` translation (#5775).
 
 ## Under the Hood
 
@@ -40,6 +44,7 @@
 - Move all keymaps into a single `defaultKeymap`.
 - Assume `**` as default bold and `*` as default italic formatting for Markdown
   commands if the config field is not present.
+- Added a `pandocLinkParser` for properly parsing pandoc link attribute strings.
 
 # 3.4.4
 
