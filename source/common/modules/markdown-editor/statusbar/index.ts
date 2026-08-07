@@ -21,6 +21,8 @@ import { cursorStatus, wordcountStatus, charcountStatus, inputModeStatus } from 
 import { languageToolStatus } from './language-tool'
 import { diagnosticsStatus } from './diagnostics'
 import { statusbarProjectInfo } from '../plugins/project-info-field'
+import { renderingModeToggle } from '../renderers'
+import { sanitizeHTML } from 'source/common/util/sanitize-html'
 
 /**
  * The interface each item on the statusbar must conform to.
@@ -73,6 +75,7 @@ function createStatusbar (_view: EditorView): Panel {
       const items = [
         statusbarProjectInfo,
         magicQuotesStatus,
+        renderingModeToggle,
         readabilityStatus,
         cursorStatus,
         wordcountStatus,
@@ -94,7 +97,7 @@ function createStatusbar (_view: EditorView): Panel {
       for (const element of elements) {
         const span = document.createElement('span')
         if (element.allowHtml === true) {
-          span.innerHTML = element.content
+          span.innerHTML = sanitizeHTML(element.content)
         } else {
           span.textContent = element.content
         }

@@ -17,10 +17,10 @@
 import { defineStore } from 'pinia'
 import type { DocumentInfo } from 'source/common/modules/markdown-editor'
 import type { ToCEntry } from 'source/common/modules/markdown-editor/plugins/toc-field'
-import { ref, type Ref } from 'vue'
-import type { SearchResultWrapper } from 'source/types/common/search'
+import { computed, ref, type Ref } from 'vue'
 import { type WritingTarget } from '@providers/targets'
 import type { AssetsProviderIPCAPI } from 'source/app/service-providers/assets'
+import type { SearchResultWrapper } from 'source/win-main/GlobalSearch.vue'
 
 const ipcRenderer = window.ipc
 
@@ -46,6 +46,7 @@ async function updateSnippets (snippets: Ref<Array<{ name: string, content: stri
 }
 
 export const useWindowStateStore = defineStore('window-state', () => {
+  const isFullscreen = ref(false)
   const uncollapsedDirectories = ref<string[]>([])
   const distractionFreeMode = ref<undefined|string>(undefined)
   const activeDocumentInfo = ref<undefined|DocumentInfo>(undefined)
@@ -54,9 +55,18 @@ export const useWindowStateStore = defineStore('window-state', () => {
   const writingTargets = ref<WritingTarget[]>([])
 
   /**
-   * This variable stores search results from the global search
+   * SEARCH RESULTS FUNCTIONALITY
    */
   const searchResults = ref<SearchResultWrapper[]>([])
+  const maxSearchResultWeight = computed(() => {
+    const allWeights = searchResults.value.map(r => r.weight)
+    return Math.max(...allWeights)
+  })
+
+  function addSearchResult (result: SearchResultWrapper) {
+    searchResults.value.push(result)
+    searchResults.value.sort((a, b) => b.weight - a.weight)
+  }
 
   // Snippets
   ipcRenderer.on('assets-provider', (event, what: string) => {
@@ -79,6 +89,12 @@ export const useWindowStateStore = defineStore('window-state', () => {
   ipcRenderer.invoke('targets-provider', { command: 'get-targets' })
     .then((targets: WritingTarget[]) => { writingTargets.value = targets })
     .catch(e => console.error(e))
+  
+  ipcRenderer.on('window-controls', (event, { command, payload }) => {
+    if (command === 'fullscreen' && typeof payload === 'boolean') {
+      isFullscreen.value = payload
+    }
+  })
 
   return {
     uncollapsedDirectories,
@@ -86,7 +102,10 @@ export const useWindowStateStore = defineStore('window-state', () => {
     activeDocumentInfo,
     tableOfContents,
     searchResults,
+    addSearchResult,
+    maxSearchResultWeight,
     snippets,
-    writingTargets
+    writingTargets,
+    isFullscreen
   }
 })

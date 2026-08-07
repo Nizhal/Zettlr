@@ -22,6 +22,9 @@ import type LogProvider from '@providers/log'
 import { zoomIn, zoomOut } from './font-zoom'
 import type ConfigProvider from '@providers/config'
 import type DocumentManager from '@providers/documents'
+import { DocumentType } from '@dts/common/documents'
+import { cmShortcutToElectron } from 'source/common/util/shortcuts'
+import { type MenuShortcutName, getCustomShortcut } from './shortcuts'
 
 export default function getMenu (
   logger: LogProvider,
@@ -34,6 +37,22 @@ export default function getMenu (
   _setCheckboxState: (id: string, val: boolean) => void
 ): MenuItemConstructorOptions[] {
   const useGuiZoom = config.get('system.zoomBehavior') === 'gui'
+
+  const updateMenuItem: MenuItemConstructorOptions = {
+    id: 'menu.update',
+    label: trans('Check for updates'),
+    click: function (_menuitem, _focusedWindow) {
+      // Immediately open the window instead of first checking
+      commands.run('open-update-window', undefined)
+        .catch(e => logger.error(String(e.message), e))
+    }
+  }
+
+  // Utility function to grab custom shortcuts
+  const shortcutMap = config.get().shortcuts.ui
+  const sc = (name: MenuShortcutName) => {
+    return cmShortcutToElectron(getCustomShortcut(name, shortcutMap))
+  }
 
   const menu: MenuItemConstructorOptions[] = [
     // APP MENU
@@ -120,7 +139,7 @@ export default function getMenu (
               label: 'Markdown',
               accelerator: 'Cmd+N',
               click: function (_menuitem, _focusedWindow) {
-                commands.run('file-new', { type: 'md' })
+                commands.run('file-new', { type: DocumentType.Markdown })
                   .catch(e => logger.error(String(e.message), e))
               }
             },
@@ -128,7 +147,7 @@ export default function getMenu (
               id: 'menu.new_tex_file',
               label: 'TeX',
               click: function (_menuitem, _focusedWindow) {
-                commands.run('file-new', { type: 'tex' })
+                commands.run('file-new', { type: DocumentType.LaTeX })
                   .catch(e => logger.error(String(e.message), e))
               }
             },
@@ -136,7 +155,7 @@ export default function getMenu (
               id: 'menu.new_yaml_file',
               label: 'YAML',
               click: function (_menuitem, _focusedWindow) {
-                commands.run('file-new', { type: 'yaml' })
+                commands.run('file-new', { type: DocumentType.YAML })
                   .catch(e => logger.error(String(e.message), e))
               }
             },
@@ -144,7 +163,7 @@ export default function getMenu (
               id: 'menu.new_json_file',
               label: 'JSON',
               click: function (_menuitem, _focusedWindow) {
-                commands.run('file-new', { type: 'json' })
+                commands.run('file-new', { type: DocumentType.JSON })
                   .catch(e => logger.error(String(e.message), e))
               }
             }
@@ -384,7 +403,7 @@ export default function getMenu (
         {
           id: 'menu.filter_files',
           label: trans('Filter files'),
-          accelerator: 'Cmd+Shift+T',
+          accelerator: sc('filter-files'),
           click: function (_menuitem, focusedWindow) {
             (focusedWindow as BrowserWindow|undefined)?.webContents.send('shortcut', 'filter-files')
           }
@@ -598,7 +617,7 @@ export default function getMenu (
         {
           id: 'menu.tab_previous',
           label: trans('Previous Tab'),
-          accelerator: 'Ctrl+Shift+Tab',
+          accelerator: sc('previous-tab'),
           click: function (_menuitem, focusedWindow) {
             (focusedWindow as BrowserWindow|undefined)?.webContents.send('shortcut', 'previous-tab')
           }
@@ -606,7 +625,7 @@ export default function getMenu (
         {
           id: 'menu.tab_next',
           label: trans('Next Tab'),
-          accelerator: 'Ctrl+Tab',
+          accelerator: sc('next-tab'),
           click: function (_menuitem, focusedWindow) {
             (focusedWindow as BrowserWindow|undefined)?.webContents.send('shortcut', 'next-tab')
           }
@@ -634,15 +653,7 @@ export default function getMenu (
             windows.showAboutWindow()
           }
         },
-        {
-          id: 'menu.update',
-          label: trans('Check for updates'),
-          click: function (_menuitem, _focusedWindow) {
-            // Immediately open the window instead of first checking
-            commands.run('open-update-window', undefined)
-              .catch(e => logger.error(String(e.message), e))
-          }
-        },
+        ...(__UPDATES_DISABLED__ === '0' ? [updateMenuItem] : []),
         {
           type: 'separator'
         },
@@ -713,7 +724,7 @@ export default function getMenu (
                 app.relaunch({ args: process.argv.slice(1).concat(['--clear-cache']) })
                 app.quit()
               })
-              .catch(err => logger.error(err.message, err))
+              .catch(err => logger.error(err.message as string, err))
           }
         }
       ]

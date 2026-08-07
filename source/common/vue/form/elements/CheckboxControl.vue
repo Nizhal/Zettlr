@@ -31,7 +31,7 @@
         disabled: disabled === true
       }"
     >
-      <span v-html="label"></span>
+      <span>{{ label }}</span>
       <div v-if="info" class="info">
         {{ info }}
       </div>
@@ -92,7 +92,7 @@ body {
     // Some space for the checkbox itself, and then only as much as necessary to
     // fit in the label (this prevents checking/unchecking the checkbox if the
     // user clicks far beyond the label string)
-    grid-template-columns: @input-size * 2 max-content;
+    grid-template-columns: @input-size * 2 auto;
     grid-template-rows: 100%;
     grid-template-areas: "input label";
     align-items: center;
@@ -174,7 +174,7 @@ body.darwin {
   @input-size: 14px;
 
   label {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    font-family: system-ui, sans-serif;
     font-size: 13px;
   }
 
@@ -299,7 +299,7 @@ body.linux {
   @input-size: 14px;
 
   label {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    font-family: system-ui, sans-serif;
     font-size: 13px;
   }
 

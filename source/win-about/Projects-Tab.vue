@@ -1,6 +1,6 @@
 <template>
   <div>
-    <p v-html="projectsIntro"></p>
+    <p>{{ projectsIntro }}</p>
 
     <div id="project-container">
       <div class="project-box" onclick="window.location = 'https://github.com/dsifford/astrocite'">
@@ -9,14 +9,6 @@
         </h4>
         <p class="project-description">
           A safe parser from BibTex to CSL JSON
-        </p>
-      </div>
-      <div class="project-box" onclick="window.location = 'https://www.chartjs.org/'">
-        <h4 class="project-name">
-          Chart.js
-        </h4>
-        <p class="project-description">
-          Simple HTML5 Charts using the &lt;canvas&gt; tag
         </p>
       </div>
       <div class="project-box" onclick="window.location = 'https://github.com/paulmillr/chokidar'">

@@ -3,13 +3,14 @@
     <button
       v-bind:id="`toolbar-${props.control.id ?? ''}`"
       role="button"
+      class="ring-progress"
       v-on:click="emit('click')"
     >
       <RingProgress
         v-bind:ratio="props.control.progressPercent / 100"
         v-bind:color="props.control.trackColour"
       ></RingProgress>
-      <span v-html="props.control.label"></span>
+      <span>{{ props.control.label }}</span>
     </button>
   </div>
 </template>
@@ -42,7 +43,7 @@ export interface RingProgressButtonControl {
   trackColour?: string
   label?: string
   // Allow arbitrary properties that we ignore
-  [key: string]: any
+  [key: string]: unknown
 }
 
 const props = defineProps<{
@@ -52,13 +53,15 @@ const props = defineProps<{
 const emit = defineEmits<(e: 'click') => void>()
 </script>
 
-<style lang="less">
-body button svg.progress-ring {
+<style lang="css" scoped>
+button svg.progress-ring {
   margin: 0;
   padding: 0;
 }
 
-body.linux button svg.progress-ring {
-  margin: 1px; // Center the SVG on the middle of the button, see also Toolbar.vue
+button.ring-progress {
+  padding: 0;
+  margin: 0;
+  display: block;
 }
 </style>

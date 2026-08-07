@@ -20,6 +20,7 @@ import { StateEffect, StateField } from '@codemirror/state'
 import safeAssign from '@common/util/safe-assign'
 import { CITEPROC_MAIN_DB } from '@dts/common/citeproc'
 import { type MarkdownTheme } from '@providers/config/get-config-template'
+import { type CustomEditorShortcut } from '../keymaps/shortcuts'
 
 export interface AutocorrectOptions {
   active: boolean
@@ -30,8 +31,13 @@ export interface AutocorrectOptions {
 
 export interface EditorConfiguration {
   autocompleteSuggestEmojis: boolean
+  snippetAutocompleteTriggerCharacter: ':'
+  autocompleteWithEnter: boolean
+  autocompleteWithTab: boolean
   autocorrect: AutocorrectOptions
   autoCloseBrackets: boolean
+  renderingMode: 'preview'|'raw'
+  previewModeShowSyntaxWhenCursorIsAdjacent: boolean
   renderCitations: boolean
   renderIframes: boolean
   renderImages: boolean
@@ -41,15 +47,19 @@ export interface EditorConfiguration {
   renderHeadings: boolean
   renderTables: boolean
   renderEmphasis: boolean
+  renderPandoc: boolean
+  renderHorizontalRules: boolean
   imagePreviewWidth: number
   imagePreviewHeight: number
   idRE: string
   idGen: string
   indentUnit: number
   indentWithTabs: boolean
+  alwaysIndentLineOnTab: boolean
   linkPreference: 'always'|'never'|'withID'
   zknLinkFormat: 'link|title'|'title|link'
-  linkFilenameOnly: boolean
+  zknAddFileTitle: boolean
+  linkWithIDIfPossible: boolean
   metadata: {
     path: string
     id: string
@@ -57,6 +67,7 @@ export interface EditorConfiguration {
   }
   boldFormatting: '**'|'__'
   italicFormatting: '*'|'_'
+  highlightFormatting: 'span'|'=='
   citeStyle: 'in-text'|'in-text-suffix'|'regular'
   inputMode: 'default'|'vim'|'emacs'
   muteLines: boolean
@@ -69,10 +80,13 @@ export interface EditorConfiguration {
   showStatusbar: boolean
   showFormattingToolbar: boolean
   darkMode: boolean
+  darkModeEditor: 'match'|'light'|'dark'
   theme: MarkdownTheme
   margins: 'S'|'M'|'L'
   highlightWhitespace: boolean
+  showMarkdownLineNumbers: boolean
   countChars: boolean
+  shortcuts: CustomEditorShortcut[]
 }
 
 export function getDefaultConfig (): EditorConfiguration {
@@ -87,7 +101,12 @@ export function getDefaultConfig (): EditorConfiguration {
       replacements: []
     },
     autocompleteSuggestEmojis: false,
+    snippetAutocompleteTriggerCharacter: ':',
+    autocompleteWithEnter: false,
+    autocompleteWithTab: true,
     autoCloseBrackets: true,
+    renderingMode: 'preview',
+    previewModeShowSyntaxWhenCursorIsAdjacent: true,
     renderCitations: true,
     renderIframes: true,
     renderImages: true,
@@ -97,15 +116,19 @@ export function getDefaultConfig (): EditorConfiguration {
     renderHeadings: true,
     renderTables: true,
     renderEmphasis: true,
+    renderPandoc: true,
+    renderHorizontalRules: true,
     imagePreviewWidth: 100,
     imagePreviewHeight: 100,
     idRE: '(\\d{14})',
     idGen: '',
     indentUnit: 4,
     indentWithTabs: false,
+    alwaysIndentLineOnTab: false,
     linkPreference: 'always',
     zknLinkFormat: 'link|title',
-    linkFilenameOnly: false,
+    linkWithIDIfPossible: false,
+    zknAddFileTitle: true,
     metadata: {
       path: '',
       id: '',
@@ -113,6 +136,7 @@ export function getDefaultConfig (): EditorConfiguration {
     },
     boldFormatting: '**',
     italicFormatting: '_',
+    highlightFormatting: '==',
     citeStyle: 'regular',
     muteLines: true,
     readabilityAlgorithm: 'dale-chall',
@@ -125,10 +149,13 @@ export function getDefaultConfig (): EditorConfiguration {
     showStatusbar: false,
     showFormattingToolbar: true,
     darkMode: false,
+    darkModeEditor: 'match',
     theme: 'berlin',
     margins: 'M',
     highlightWhitespace: false,
-    countChars: false
+    showMarkdownLineNumbers: false,
+    countChars: false,
+    shortcuts: []
   }
 }
 

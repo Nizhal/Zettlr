@@ -25,12 +25,13 @@
 
 import { drawSelection, dropCursor, EditorView, lineNumbers } from '@codemirror/view'
 import { onMounted, ref, toRef, watch } from 'vue'
-import { closeBrackets } from '@codemirror/autocomplete'
-import { bracketMatching, codeFolding, foldGutter, indentOnInput } from '@codemirror/language'
+import { autocompletion, closeBrackets } from '@codemirror/autocomplete'
+import { bracketMatching, codeFolding, foldGutter, indentOnInput, indentUnit, StreamLanguage } from '@codemirror/language'
 import { codeSyntaxHighlighter, markdownSyntaxHighlighter } from '@common/modules/markdown-editor/theme/syntax'
 import { yaml } from '@codemirror/lang-yaml'
+import { lua } from '@codemirror/legacy-modes/mode/lua'
 import { EditorState, type Extension } from '@codemirror/state'
-import { cssLanguage } from '@codemirror/lang-css'
+import { css } from '@codemirror/lang-css'
 import markdownParser from '@common/modules/markdown-editor/parser/markdown-parser'
 import { yamlLint } from '@common/modules/markdown-editor/linters/yaml-lint'
 import { lintGutter } from '@codemirror/lint'
@@ -42,9 +43,12 @@ import { plainLinkHighlighter } from '@common/modules/markdown-utils/plain-link-
 import { useConfigStore } from 'source/pinia'
 import { darkMode, darkModeEffect } from '../modules/markdown-editor/theme/dark-mode'
 import { highlightWhitespace, highlightWhitespaceEffect } from '../modules/markdown-editor/plugins/highlight-whitespace'
-import { defaultKeymap } from '../modules/markdown-editor/keymaps/default'
+import { zettlrKeymap } from '../modules/markdown-editor/keymaps'
+import { type CustomEditorShortcut } from '../modules/markdown-editor/keymaps/shortcuts'
 
 const configStore = useConfigStore()
+
+type SupportedLanguage = 'css'|'yaml'|'lua'|'markdown-snippets'
 
 /**
  * We have to define the CodeMirror instance outside of Vue, since the Proxy-
@@ -60,18 +64,33 @@ const wrapperId = ref<string>('code-editor')
 
 const cleanFlag = ref<boolean>(true)
 
-function getExtensions (mode: 'css'|'yaml'|'markdown-snippets'): Extension[] {
+function getExtensions (mode: SupportedLanguage): Extension[] {
+  const { editor, shortcuts } = configStore.config
+
+  const shortcutList = Object.entries(shortcuts.editor)
+    .map(([ name, shortcut ]) => ({ name, shortcut }))
+    .filter((shortcut): shortcut is CustomEditorShortcut => shortcut.shortcut !== undefined)
+
+  let numSpaces = editor.indentUnit
+  let useTabs = editor.indentWithTabs
+
+  if (mode === 'yaml') {
+    useTabs = false
+  }
+
   const extensions = [
-    defaultKeymap(),
+    zettlrKeymap(shortcutList, editor),
     search({ top: true }),
     codeFolding(),
     foldGutter(),
     history(),
-    highlightWhitespace(configStore.config.editor.showWhitespace),
+    highlightWhitespace(editor.showWhitespace),
     drawSelection({ drawRangeCursor: false, cursorBlinkRate: 1000 }),
     dropCursor(),
     statusbar,
     EditorState.allowMultipleSelections.of(true),
+    EditorState.tabSize.of(numSpaces),
+    indentUnit.of(useTabs ? '\t' : ' '.repeat(numSpaces)),
     // Ensure the cursor never completely sticks to the top or bottom of the editor
     EditorView.scrollMargins.of(_view => { return { top: 30, bottom: 30 } }),
     lintGutter(),
@@ -79,6 +98,7 @@ function getExtensions (mode: 'css'|'yaml'|'markdown-snippets'): Extension[] {
     closeBrackets(),
     bracketMatching(),
     indentOnInput(),
+    autocompletion(),
     codeSyntaxHighlighter(), // This comes from the main editor component
     darkMode({ darkMode: configStore.config.darkMode }),
     plainLinkHighlighter,
@@ -101,7 +121,7 @@ function getExtensions (mode: 'css'|'yaml'|'markdown-snippets'): Extension[] {
     case 'css':
       return [
         ...extensions,
-        cssLanguage
+        css(),
       ]
     case 'markdown-snippets':
       return [
@@ -117,10 +137,15 @@ function getExtensions (mode: 'css'|'yaml'|'markdown-snippets'): Extension[] {
         }), // Comes from the main editor
         markdownSyntaxHighlighter() // Comes from the main editor
       ]
+    case 'lua':
+      return [
+        ...extensions,
+        StreamLanguage.define(lua)
+      ]
   }
 }
 
-function setContents (contents: string, mode: 'css'|'yaml'|'markdown-snippets'): void {
+function setContents (contents: string, mode: SupportedLanguage): void {
   const state = EditorState.create({
     doc: contents,
     extensions: getExtensions(mode)
@@ -133,7 +158,7 @@ function setContents (contents: string, mode: 'css'|'yaml'|'markdown-snippets'):
 
 interface Props {
   modelValue: string
-  mode: 'css'|'markdown-snippets'|'yaml'
+  mode: SupportedLanguage
   readonly?: boolean
 }
 
@@ -264,6 +289,11 @@ body {
     .cm-gutters {
       background-color: @base2;
       color: @base1;
+    }
+
+    // Hide pilcrows
+    .cm-pilcrow {
+      opacity: 0;
     }
   }
 

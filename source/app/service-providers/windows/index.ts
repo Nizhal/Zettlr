@@ -39,6 +39,7 @@ import createProjectPropertiesWindow from './create-project-properties-window'
 import createPasteImageModal from './create-paste-image-modal'
 import createErrorModal from './create-error-modal'
 import shouldOverwriteFileDialog from './dialog/should-overwrite-file'
+import shouldCloseAllDialog from './dialog/should-close-all'
 import shouldReplaceFileDialog from './dialog/should-replace-file'
 import askDirectoryDialog from './dialog/ask-directory'
 import askSaveChanges from './dialog/ask-save-changes'
@@ -47,7 +48,7 @@ import type { WindowPosition } from './types'
 import askFileDialog from './dialog/ask-file'
 import saveFileDialog from './dialog/save-dialog'
 import * as bcp47 from 'bcp-47'
-import mapFSError from './map-fs-error'
+import mapFSError, { type NodeError } from './map-fs-error'
 import ProviderContract, { type IPCAPI } from '@providers/provider-contract'
 import type LogProvider from '@providers/log'
 import type DocumentManager from '@providers/documents'
@@ -61,6 +62,10 @@ import type { PasteModalResult } from '../commands/save-image-from-clipboard'
 export interface RequestFilesIPCAPI {
   filters: FileFilter[],
   multiSelection: boolean
+}
+
+export interface CloseAllIPCAPI {
+  rootType: 'workspace'|'file'
 }
 
 export type WindowControlsIPCAPI = IPCAPI<{
@@ -163,15 +168,6 @@ export default class WindowProvider extends ProviderContract {
           } else {
             callingWindow.maximize()
           }
-        // fall through
-        case 'get-maximised-status':
-          event.reply('window-controls', {
-            command: 'get-maximised-status',
-            payload: callingWindow.isMaximized()
-          })
-          break
-        case 'win-minimise':
-          callingWindow.minimize()
           break
         case 'win-close':
           callingWindow.close()
@@ -247,6 +243,11 @@ export default class WindowProvider extends ProviderContract {
       return await this.askDir(trans('Open project folder'), focusedWindow)
     })
 
+    ipcMain.handle('close-all', async (event, message: CloseAllIPCAPI) => {
+      const { rootType } = message
+      return await this.shouldCloseAll(rootType)
+    })
+
     this._documents.on(DP_EVENTS.CHANGE_FILE_STATUS, (_ctx: any) => {
       // Always update the main window's flag depending on whether the document
       // manager is clean or not
@@ -259,8 +260,12 @@ export default class WindowProvider extends ProviderContract {
       this.syncMainWindows()
     })
 
-    this._documents.on(DP_EVENTS.WINDOW_CLOSED, ({ windowId }) => {
-      const win = this._mainWindows[windowId]
+    this._documents.on(DP_EVENTS.WINDOW_CLOSED, (args) => {
+      if (args == null || typeof args != 'object' || !('windowId' in args) || typeof args.windowId !== 'string') {
+        return
+      }
+
+      const win = this._mainWindows[args.windowId]
       if (win !== undefined) {
         win.close()
       }
@@ -859,7 +864,7 @@ export default class WindowProvider extends ProviderContract {
    * @param   {string}  title  A title for the error prompt (e.g. Error opening Workspace)
    * @param   {any}     error  The error object that should be reported. Should be thrown by fs
    */
-  reportFSError (title: string, error: any): void {
+  reportFSError (title: string, error: NodeError): void {
     const { what, why } = mapFSError(error)
     this.showErrorMessage(title, `There was an error accessing "${what}"`, why)
   }
@@ -984,19 +989,39 @@ export default class WindowProvider extends ProviderContract {
     return await shouldOverwriteFileDialog(firstMainWin, filename)
   }
 
+
+  /**
+    * Ask whether or not the user wants to close all open workspaces or files
+    *
+    * @param   {'workspace'|'file'} rootType The type of the roots being closed.
+    *
+    * @return  {boolean}  Resolves with `true` if the roots should be closed
+    */
+  async shouldCloseAll (rootType: 'workspace'|'file'): Promise<boolean> {
+    const firstMainWin = this.getFirstMainWindow()
+    if (firstMainWin === undefined) {
+      return false
+    }
+
+    return await shouldCloseAllDialog(firstMainWin, rootType)
+  }
+
   /**
    * Asks the user whether or not to persist or drop changes to their files. It
    * returns the ID of the clicked button in the message box, which is 0 to
    * simply drop changes, 1 to abort closing in order to save.
    *
+   * @param   {string}              [detail]  An optional string to display in the
+   *                                          `detail` section of the dialogue.
+   *
    * @return  {Promise<any>}  Returns the message box results
    */
-  async askSaveChanges (): Promise<Electron.MessageBoxReturnValue> {
+  async askSaveChanges (detail?: string): Promise<Electron.MessageBoxReturnValue> {
     const firstMainWin = this.getFirstMainWindow()
     if (firstMainWin === undefined) {
       throw new Error('Could not ask to save changes: No main window was open!')
     }
-    return await askSaveChanges(firstMainWin)
+    return await askSaveChanges(firstMainWin, detail)
   }
 
   /**

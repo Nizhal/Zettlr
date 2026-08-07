@@ -14,12 +14,14 @@
  */
 
 import path from 'path'
+import { promises as fs } from 'fs'
 import { app, ipcMain } from 'electron'
 import ProviderContract from '../provider-contract'
 import type LogProvider from '../log'
 import PersistentDataContainer from '@common/modules/persistent-data-container'
 import broadcastIPCMessage from '@common/util/broadcast-ipc-message'
-import { today } from '@common/util/stats'
+import { isDateInTheFuture, today } from '@common/util/stats'
+import { disambiguateFile } from 'source/app/util/disambiguate-filename'
 
 // This is the data exposed publicly
 export interface Stats {
@@ -102,7 +104,10 @@ export default class StatsProvider extends ProviderContract {
     if (!await this.container.isInitialized()) {
       // Stats container is not yet initialized
       await this.container.init(this.stats)
-    } else {
+      return
+    }
+
+    try {
       const parsedData = await this.container.get()
       // We cannot safeAssign here, as we store everything in records, which
       // would make the function throw the keys away.
@@ -118,10 +123,27 @@ export default class StatsProvider extends ProviderContract {
           if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) {
             // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
             delete this.stats[prop][key]
+            this._logger.warning(`[Stats Provider] Removed invalid date ${key} from ${prop} with a count of ${value}.`)
           } else if (typeof value !== 'number' || Number.isNaN(value)) {
             this.stats[prop][key] = 0
+          } else if (isDateInTheFuture(key)) {
+            // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+            delete this.stats[prop][key]
+            this._logger.warning(`[Stats Provider] Removed invalid date ${key} from ${prop} with a count of ${value}.`)
           }
         }
+      }
+    } catch (err: unknown) {
+      // If getting the data throws an error, we must not prevent Zettlr from
+      // starting. In this case, we'll init the container with our default data
+      // and move the malformed file. See #6127 for context.
+      const newPath = await disambiguateFile(this.statsFile)
+      await fs.rename(this.statsFile, newPath)
+      // Re-init with the correct data
+      await this.container.init(this.stats)
+
+      if (err instanceof Error) {
+        this._logger.error(`[StatsProvider] Could not read stats file: ${err.message}. Resetting stats to default and moving malformed file to backup: ${path.basename(newPath)}. Please check the file for what caused the error and possibly report this as a potential bug.`, err)
       }
     }
 

@@ -12,12 +12,13 @@
  * END HEADER
  */
 
-import { type EditorView, hoverTooltip, type Tooltip } from '@codemirror/view'
+import { EditorView, hoverTooltip, type Tooltip } from '@codemirror/view'
 import { syntaxTree } from '@codemirror/language'
 import { type EditorState } from '@codemirror/state'
 import { configField } from '../util/configuration'
 import { trans } from '@common/i18n-renderer'
 import { md2html } from '@common/modules/markdown-utils'
+import { sanitizeHTML } from 'source/common/util/sanitize-html'
 
 /**
  * Given fn in the format [^some-identifier], this function attempts to find a
@@ -33,19 +34,13 @@ function findRefForFootnote (state: EditorState, fn: string): { from: number, to
   // Find the corresponding ref
   syntaxTree(state).iterate({
     enter (node) {
-      if (node.type.name === 'Document') {
-        return // Ignore but traverse down
-      }
-
-      if (node.type.name !== 'FootnoteRef') {
-        return false // Do not traverse down
+      if (node.name !== 'FootnoteRef') {
+        return
       }
 
       const label = node.node.getChild('FootnoteRefLabel')
-      const body = node.node.getChild('FootnoteRefBody')
-
-      if (label === null || body === null) {
-        return false // Should not happen, but you never know
+      if (!label) {
+        return false
       }
 
       // Check the contents
@@ -56,9 +51,9 @@ function findRefForFootnote (state: EditorState, fn: string): { from: number, to
       }
 
       text = {
-        from: body.from,
-        to: body.to,
-        text: state.sliceDoc(body.from, body.to)
+        from: node.from,
+        to: node.to,
+        text: state.sliceDoc(node.from, node.to)
       }
     }
   })
@@ -78,7 +73,7 @@ function footnotesTooltip (view: EditorView, pos: number, side: 1 | -1): Tooltip
 
   const fn = view.state.sliceDoc(nodeAt.from, nodeAt.to)
 
-  if (fn.endsWith('^]')) {
+  if (fn.startsWith('^[')) {
     return null // It's an inline footnote
   }
 
@@ -86,13 +81,6 @@ function footnotesTooltip (view: EditorView, pos: number, side: 1 | -1): Tooltip
   const { zknLinkFormat } = view.state.field(configField)
 
   const { library } = view.state.field(configField).metadata
-  const tooltipContent = md2html(
-    (fnBody === undefined || fnBody.text === '')
-      ? trans('No footnote text found.')
-      : fnBody.text,
-    window.getCitationCallback(library),
-    zknLinkFormat
-  )
 
   return {
     pos: nodeAt.from,
@@ -100,7 +88,24 @@ function footnotesTooltip (view: EditorView, pos: number, side: 1 | -1): Tooltip
     above: true,
     create (view) {
       const dom = document.createElement('div')
-      dom.innerHTML = tooltipContent
+      const content = document.createElement('div')
+      content.classList.add('footnote-preview-container')
+      dom.appendChild(content)
+
+      md2html(
+        (fnBody === undefined || fnBody.text === '')
+          ? trans('No footnote text found.')
+          : fnBody.text,
+        {
+          onCitation: window.getCitationCallback(library),
+          zknLinkFormat
+        }
+      )
+        .then(tooltipContent => {
+          content.innerHTML = sanitizeHTML(tooltipContent)
+        })
+        .catch(err => console.error(err))
+
       if (fnBody === undefined) {
         return { dom }
       }
@@ -120,4 +125,33 @@ function footnotesTooltip (view: EditorView, pos: number, side: 1 | -1): Tooltip
   }
 }
 
-export const footnoteHover = hoverTooltip(footnotesTooltip, { hoverTime: 100 })
+export const footnoteHover = [
+  hoverTooltip(footnotesTooltip, { hoverTime: 100 }),
+  EditorView.baseTheme({
+    '.footnote-preview-container': {
+      maxWidth: '340px',
+      padding: '5px',
+      fontSize: '80%',
+      whiteSpace: 'break-word',
+      paddingLeft: '20px',
+      textIndent: '-20px',
+    },
+    '.footnote-preview-container pre': {
+      whiteSpace: 'pre-wrap'
+    },
+    '.footnote-preview-container .footnote-ref-label': {
+      float: 'left',
+      paddingRight: '20px',
+      fontWeight: 'bold',
+      '& a': {
+        color: 'inherit',
+        textDecoration: 'none',
+      }
+    },
+    // DEBUG: We need to find a way to just extract the children and turn those
+    // to HTML. This also absolves us from having to monkey-patch this hr.
+    '.footnote-preview-container > hr': {
+      display: 'none'
+    }
+  })
+]

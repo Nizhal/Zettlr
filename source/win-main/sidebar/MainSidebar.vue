@@ -9,13 +9,13 @@
     <!-- Now the tab containers -->
     <div id="sidebar-tab-container">
       <ToCTab
-        v-if="currentTab === 'toc'"
+        v-show="currentTab === 'toc'"
         v-on:move-section="emit('move-section', $event)"
         v-on:jump-to-line="emit('jump-to-line', $event)"
       ></ToCTab>
-      <ReferencesTab v-if="currentTab === 'references'"></ReferencesTab>
-      <RelatedFilesTab v-if="currentTab === 'relatedFiles'"></RelatedFilesTab>
-      <OtherFilesTab v-if="currentTab === 'attachments'"></OtherFilesTab>
+      <ReferencesTab v-show="currentTab === 'references'"></ReferencesTab>
+      <RelatedFilesTab v-show="currentTab === 'relatedFiles'"></RelatedFilesTab>
+      <OtherFilesTab v-show="currentTab === 'attachments'"></OtherFilesTab>
     </div>
   </div>
 </template>
@@ -121,20 +121,6 @@ body {
     h1 {
       font-size: 16px;
       margin: 10px 0;
-    }
-
-    // Bibliography entries
-    div.csl-bib-body {
-      div.csl-entry {
-        display: list-item;
-        list-style-type: square;
-        margin: 1em 0.2em 1em 1.8em;
-        font-size: 80%;
-        user-select: text;
-        cursor: text;
-      }
-
-      a { color: var(--blue-0); }
     }
 
     // Table of Contents entries

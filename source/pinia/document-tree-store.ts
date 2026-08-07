@@ -17,6 +17,8 @@ import { DP_EVENTS, type BranchNodeJSON, type LeafNodeJSON, type OpenDocument } 
 import { ref, type Ref } from 'vue'
 import type { DocumentManagerIPCAPI, DocumentsUpdateContext } from '@providers/documents'
 import { useWindowStateStore } from 'source/pinia'
+import { useWorkspaceStore } from 'source/pinia'
+import { pathDirname } from 'source/common/util/renderer-path-polyfill'
 
 const ipcRenderer = window.ipc
 type DocumentTree = BranchNodeJSON|LeafNodeJSON
@@ -126,13 +128,42 @@ function copyDelta (paneData: Ref<LeafNodeJSON[]>, treedata: DocumentTree, conte
   localLeaf.openFiles = remoteLeaf.openFiles
 }
 
+/**
+ * If applicable, this function uncollapses all directories between the file's
+ * containing workspace root and the file. This is not applicable for, e.g.,
+ * root files since there are no folders in the UI in need of uncollapsing.
+ *
+ * @param   {string}  filePath  The file path
+ */
+function maybeUncollapseDirectories (filePath: string): void {
+  const windowStateStore = useWindowStateStore()
+  const workspaceStore = useWorkspaceStore()
+
+  const containingWs = workspaceStore.pathList.find(p => filePath.startsWith(p))
+
+  if (containingWs === undefined) {
+    return // File path is not part of a workspace, uncollapsing not applicable
+  }
+
+  // Extract all intermediary directories between the workspace root and the file
+
+  let dir = filePath
+
+  while (dir.startsWith(containingWs)) {
+    dir = pathDirname(dir)
+    if (!windowStateStore.uncollapsedDirectories.includes(dir)) {
+      windowStateStore.uncollapsedDirectories.push(dir)
+    }
+  }
+}
+
 export const useDocumentTreeStore = defineStore('document-tree', () => {
   const windowStateStore = useWindowStateStore()
   const searchParams = new URLSearchParams(window.location.search)
   const windowId = searchParams.get('window_id')
 
   if (windowId === null) {
-    throw new Error('Could not instantiate documentTreeStore: Required search param window_id not present.')
+    console.warn('Could not instantiate documentTreeStore properly: Required search param window_id not present. The store will not update properly. This can happen if another store requires this store.')
   }
 
   /**
@@ -153,9 +184,11 @@ export const useDocumentTreeStore = defineStore('document-tree', () => {
   const lastLeafActiveFile = ref<OpenDocument|undefined>(undefined)
 
   // Initial update for the pane structure ...
-  ipcRenderer.invoke('documents-provider', { command: 'retrieve-tab-config', payload: { windowId } } as DocumentManagerIPCAPI)
-    .then((treedata: LeafNodeJSON|BranchNodeJSON) => recoverState(paneStructure, paneData, lastLeafId, treedata))
-    .catch(err => console.error(err))
+  if (windowId !== null) {
+    ipcRenderer.invoke('documents-provider', { command: 'retrieve-tab-config', payload: { windowId } } as DocumentManagerIPCAPI)
+      .then((treedata: LeafNodeJSON|BranchNodeJSON) => recoverState(paneStructure, paneData, lastLeafId, treedata))
+      .catch(err => console.error(err))
+  }
 
   ipcRenderer.invoke('documents-provider', { command: 'get-file-modification-status' } as DocumentManagerIPCAPI)
     .then((modifiedFiles: string[]) => { modifiedDocuments.value = modifiedFiles })
@@ -205,13 +238,16 @@ export const useDocumentTreeStore = defineStore('document-tree', () => {
               break
           }
 
-          // NOTE: We must ensure the paneData is correct before we (potentially set the leaf IDs)
+          // NOTE: We must ensure the paneData is correct before we potentially
+          // set the leaf IDs
           if (event === DP_EVENTS.ACTIVE_FILE) {
-            const { leafId } = context
+            const { leafId, filePath } = context
             lastLeafId.value = leafId
             const leaf = paneData.value.find(leaf => leaf.id === lastLeafId.value)
-            if (leaf?.activeFile != null) {
+            if (leaf?.activeFile != null && filePath !== undefined) {
               lastLeafActiveFile.value = leaf.activeFile
+              // If applicable, uncollapse the parent directory(s).
+              maybeUncollapseDirectories(leaf.activeFile.path)
             } else {
               lastLeafActiveFile.value = undefined
             }

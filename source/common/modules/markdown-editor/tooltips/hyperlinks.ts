@@ -20,6 +20,8 @@ import { shortenUrlVisually } from '@common/util/shorten-url-visually'
 import { trans } from '@common/i18n-renderer'
 import { pathDirname } from '@common/util/renderer-path-polyfill'
 import _ from 'underscore'
+import { findReferenceForLinkLabel } from '../util/links'
+import { nodeAtPos } from '../util/node-in-selection'
 
 const ipcRenderer = window.ipc
 
@@ -32,30 +34,42 @@ function unescape (text: string): string {
  * Displays a tooltip for URLs and Links across a document
  */
 export function urlTooltip (view: EditorView, pos: number, side: 1 | -1): Tooltip|null {
-  let nodeAt = syntaxTree(view.state).cursorAt(pos, side).node
+  const tree = syntaxTree(view.state)
+  let node = nodeAtPos(pos, tree, [ 'URL', 'Link', 'LinkReference' ], side)
 
-  // If the node here is a URL, it's quick, but if not, it must be a Link node
-  // that contains a URL as a child
-  if (nodeAt.type.name !== 'URL') {
-    while (nodeAt.parent !== null && nodeAt.type.name !== 'Link') {
-      nodeAt = nodeAt.parent
-    }
-
-    if (nodeAt.type.name === 'Link') {
-      const urlNode = nodeAt.getChild('URL')
-      if (urlNode !== null) {
-        nodeAt = urlNode
-      }
-    }
+  if (node === null) {
+    return null
   }
 
-  if (nodeAt.type.name !== 'URL') {
-    return null
+  // We either have a "Link", which can either have an URL, a  "LinkReference",
+  // or a "URL". If it has a "LinkReference", we must search the document for the
+  // corresponding counterpart.
+  if (node.name === 'Link') {
+    const urlNode = node.getChild('URL')
+    const labelNode = node.getChild('LinkLabel')
+    if (urlNode !== null) {
+      node = urlNode
+    } else if (labelNode !== null) {
+      const labelString = view.state.sliceDoc(labelNode.from, labelNode.to)
+      const ref = findReferenceForLinkLabel(view.state, labelString)
+
+      if (ref !== null) {
+        const url = ref.getChild('URL')
+        if (url !== null) {
+          node = url
+        }
+      }
+    }
+  } else if (node.name === 'LinkReference') {
+    const url = node.getChild('URL')
+    if (url !== null) {
+      node = url
+    }
   }
 
   // We got an URL.
   const absPath = view.state.field(configField).metadata.path
-  const url = view.state.sliceDoc(nodeAt.from, nodeAt.to)
+  const url = view.state.sliceDoc(node.from, node.to)
   const base = pathDirname(absPath)
   const validURI = makeValidUri(url, base)
 

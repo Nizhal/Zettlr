@@ -54,6 +54,7 @@ export function getFileManagerFields (config: ConfigOptions): PreferencesFieldse
     },
     {
       title: trans('Markdown document name display'),
+      infoString: trans('Determines how Zettlr will display files in various places such as the file manager.'),
       group: PreferencesGroups.FileManager,
       help: undefined, // TODO
       fields: [
@@ -71,13 +72,15 @@ export function getFileManagerFields (config: ConfigOptions): PreferencesFieldse
           // TODO: Checkbox onto the first line of the radio
           type: 'checkbox',
           label: trans('Display Markdown file extensions'),
+          info: trans('Only available if name display is set to "Filename only"'),
           model: 'display.markdownFileExtensions',
           disabled: config.fileNameDisplay !== 'filename'
         }
       ]
     },
     {
-      title: trans('Time display'),
+      title: trans('Time display and sorting'),
+      infoString: trans('Determine which timestamp Zettlr shows for files. This also affects sorting by time.'),
       group: PreferencesGroups.FileManager,
       help: undefined, // TODO
       fields: [
@@ -92,7 +95,8 @@ export function getFileManagerFields (config: ConfigOptions): PreferencesFieldse
       ]
     },
     {
-      title: trans('Sorting'),
+      title: trans('Filename sorting'),
+      infoString: trans('Determines how Zettlr sorts files and folders when sorting by name.'),
       group: PreferencesGroups.FileManager,
       help: undefined, // TODO
       fields: [
@@ -104,6 +108,34 @@ export function getFileManagerFields (config: ConfigOptions): PreferencesFieldse
             natural: trans('Use natural order (2 comes before 10)'),
             ascii: trans('Use ASCII order (2 comes after 10)')
           }
+        }
+      ]
+    },
+    {
+      title: trans('Workspace sorting'),
+      infoString: trans('Zettlr automatically sorts your workspaces by name.'),
+      group: PreferencesGroups.FileManager,
+      help: undefined, // TODO
+      fields: [
+        {
+          type: 'checkbox',
+          label: trans('Sort workspaces manually'),
+          info: trans('This will be active as soon as you manually change the sort order. Disable this to reinstate automatic sorting.'),
+          model: 'fileManager.sortWorkspacesManually'
+        }
+      ]
+    },
+    {
+      title: trans('Collapse Workspaces Behavior'),
+      group: PreferencesGroups.FileManager,
+      infoString: trans('Determine how the context menu item to collapse workspaces in the file manager behaves. You can choose single-step or two-step.'),
+      help: undefined, // TODO
+      fields: [
+        {
+          type: 'checkbox',
+          label: trans('Require two steps to collapse workspaces'),
+          info: trans('When this is active, the first collapse workspace will only collapse subfolders, the second the workspaces.'),
+          model: 'fileManager.twoStepCollapseWorkspaces',
         }
       ]
     }

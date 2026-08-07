@@ -94,8 +94,8 @@ Vim.defineEx('wq', 'wq', (cm: CodeMirror, params: ExParams) => {
   // to the user), we wait until the invocation is done and only then request a
   // close of the file.
   write(cm, params).then(() => {
-    quit(cm, params)
-  })
+    quit(cm, params).catch(err => console.error(err))
+  }).catch(err => console.error(err))
 })
 
 // Remap movement keys
@@ -103,6 +103,13 @@ Vim.defineEx('wq', 'wq', (cm: CodeMirror, params: ExParams) => {
 Vim.map('j', 'gj') // Account for line wraps when moving down
 // @ts-expect-error The types are not properly updated
 Vim.map('k', 'gk') // Account for line wraps when moving up
+
+// Map s and S, which "should" work out of the box with CM-vim.
+// See https://github.com/Zettlr/Zettlr/issues/6431-4892471526
+// @ts-expect-error The types are not properly updated
+Vim.map('s', 'cl') // Add missing substitute-character command
+// @ts-expect-error The types are not properly updated
+Vim.map('S', 'cc') // Add missing substitute-line command
 
 // Unmap bindings to restore default editor behavior
 // @ts-expect-error The types are not properly updated

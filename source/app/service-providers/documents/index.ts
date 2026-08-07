@@ -18,11 +18,10 @@
 import EventEmitter from 'events'
 import path from 'path'
 import { constants as FSConstants } from 'fs'
-import { FSALCodeFile, FSALFile } from '@providers/fsal'
 import ProviderContract, { type IPCAPI } from '@providers/provider-contract'
 import broadcastIpcMessage from '@common/util/broadcast-ipc-message'
-import type AppServiceContainer from 'source/app/app-service-container'
-import { ipcMain, app, dialog, type BrowserWindow, type MessageBoxOptions } from 'electron'
+import { type AppServiceContainer } from '../../app-service-container'
+import { ipcMain, app, dialog, type BrowserWindow, type MessageBoxOptions, shell } from 'electron'
 import { DocumentTree, type DTLeaf } from './document-tree'
 import PersistentDataContainer from '@common/modules/persistent-data-container'
 import { type TabManager } from '@providers/documents/document-tree/tab-manager'
@@ -31,11 +30,13 @@ import { v4 as uuid4 } from 'uuid'
 import { type Update } from '@codemirror/collab'
 import { ChangeSet, Text } from '@codemirror/state'
 import type { CodeFileDescriptor, MDFileDescriptor } from '@dts/common/fsal'
-import { countChars, countWords } from '@common/util/counter'
+import { countAll } from '@common/util/counter'
 import { markdownToAST } from '@common/modules/markdown-utils'
 import isFile from '@common/util/is-file'
 import { trans } from '@common/i18n-main'
 import type FSALWatchdog from '@providers/fsal/fsal-watchdog'
+import { getDocumentTypeForExtension, hasImageExt, hasMdOrCodeExt, hasPDFExt } from 'source/common/util/file-extention-checks'
+import isDir from 'source/common/util/is-dir'
 
 type DocumentWindows = Record<string, DocumentTree>
 type DocumentWindowsJSON = Record<string, BranchNodeJSON|LeafNodeJSON>
@@ -139,6 +140,8 @@ export type DocumentManagerIPCAPI = IPCAPI<{
   'save-file': { path: string }
   'open-file': LeafLoc & { path: string, newTab: boolean }
   'close-file': LeafLoc & { path: string }
+  'close-file-everywhere': { path: string }
+  'get-open-workspace-files': { path: string }
   'sort-open-files': LeafLoc & { newOrder: string[] }
   'get-file-modification-status': unknown
   'move-file': {
@@ -253,9 +256,9 @@ export default class DocumentManager extends ProviderContract {
 
       if (event === 'unlink') {
         // Close the file everywhere
-        this.closeFileEverywhere(filePath)
+        this.closeFileEverywhere(filePath).catch(err => this._app.log.error(err))
       } else if (event === 'change') {
-        this.handleRemoteChange(filePath).catch(err => console.error(err))
+        this.handleRemoteChange(filePath).catch(err => this._app.log.error(err))
       } else {
         this._app.log.warning(`[DocumentManager] Received unexpected event ${event} for ${filePath}.`)
       }
@@ -301,6 +304,13 @@ export default class DocumentManager extends ProviderContract {
           const { windowId, leafId, path } = payload
           return await this.closeFile(windowId, leafId, path)
         }
+        case 'close-file-everywhere': {
+          const { path } = payload
+          return this.closeFileEverywhere(path)
+        }
+        case 'get-open-workspace-files':
+          const { path } = payload
+          return this.getOpenFilesForWorkspace(path)
         case 'sort-open-files': {
           const { windowId, leafId, newOrder } = payload
           this.sortOpenFiles(windowId, leafId, newOrder)
@@ -501,8 +511,12 @@ export default class DocumentManager extends ProviderContract {
         }
         this._windows[key] = tree
         this.broadcastEvent(DP_EVENTS.NEW_WINDOW, { key })
-      } catch (err: any) {
-        this._app.log.error(`[Document Provider] Could not instantiate window ${key}: ${err.message as string}`, err)
+      } catch (err: unknown) {
+        if (err instanceof Error) {
+          this._app.log.error(`[Document Provider] Could not instantiate window ${key}: ${err.message}`, err)
+        } else {
+          this._app.log.error(`[Document Provider] Could not instantiate window ${key}: Unknown error`, err)
+        }
       }
     }
 
@@ -572,16 +586,16 @@ export default class DocumentManager extends ProviderContract {
   }
 
   // Enable global event listening to updates of the config
-  on (evt: string, callback: (...args: any[]) => void): void {
+  on (evt: string, callback: (...args: unknown[]) => void): void {
     this._emitter.on(evt, callback)
   }
 
-  once (evt: string, callback: (...args: any[]) => void): void {
+  once (evt: string, callback: (...args: unknown[]) => void): void {
     this._emitter.once(evt, callback)
   }
 
   // Also do the same for the removal of listeners
-  off (evt: string, callback: (...args: any[]) => void): void {
+  off (evt: string, callback: (...args: unknown[]) => void): void {
     this._emitter.off(evt, callback)
   }
 
@@ -612,8 +626,6 @@ export default class DocumentManager extends ProviderContract {
       }
     }
 
-    let type = DocumentType.Markdown
-
     // TODO: We also need to be able to load files not present in the file tree!
     const descriptor = await this._app.fsal.getDescriptorForAnySupportedFile(filePath)
     if (descriptor === undefined || descriptor.type === 'other') {
@@ -622,18 +634,12 @@ export default class DocumentManager extends ProviderContract {
 
     const content = await this._app.fsal.loadAnySupportedFile(filePath)
 
+    let type = DocumentType.Markdown
+
     if (descriptor.type === 'code') {
-      switch (descriptor.ext) {
-        case '.yaml':
-        case '.yml':
-          type = DocumentType.YAML
-          break
-        case '.json':
-          type = DocumentType.JSON
-          break
-        case '.tex':
-        case '.latex':
-          type = DocumentType.LaTeX
+      const codeDocumentType = getDocumentTypeForExtension(descriptor.path)
+      if (codeDocumentType !== undefined) {
+        type = codeDocumentType
       }
     }
 
@@ -702,7 +708,7 @@ export default class DocumentManager extends ProviderContract {
       doc.updates.push(update)
       try {
         doc.document = changes.apply(doc.document)
-      } catch (err: any) {
+      } catch (err: unknown) {
         dialog.showErrorBox(
           'Document out of sync',
           `Your modifications could not be applied to the document in memory.
@@ -791,7 +797,39 @@ current contents from the editor somewhere else, and restart the application.`
    */
   public async openFile (windowId: string|undefined, leafId: string|undefined, filePath: string, newTab?: boolean): Promise<boolean> {
     if (!isFile(filePath)) {
+      // The renderer process essentially just throws paths at the documents
+      // provider when the user intents to open them. Users can also link
+      // folders, so we just quickly check for that, and open them (similar to
+      // non-Markdown files a few lines below).
+      if (isDir(filePath)) {
+        await shell.openPath(filePath)
+        return false
+      }
+
+      // Else: Whatever this is, it was not a proper path.
       throw new Error(`Could not open file ${filePath}: Not an existing file.`)
+    }
+
+    // Check if we can, and should, actually open the file in Zettlr. If not, we
+    // need to open it via the shell externally. NOTE: This check is, to varying
+    // degrees, implemented at the sources of opening-requests (read: mostly in
+    // the renderers). If you see this comment, and spot a place where we
+    // implemented this guard somewhere else, please refactor to simply attempt
+    // to open a file path with the documents provider and defer to this check
+    // here. Amend with any additional necessary checks from the other guards.
+    if (!hasMdOrCodeExt(filePath)) {
+      const { files } = this._app.config.get()
+      let shouldOpenExternally = true
+      if (hasImageExt(filePath) && files.images.openWith === 'zettlr') {
+        shouldOpenExternally = false
+      } else if (hasPDFExt(filePath) && files.pdf.openWith === 'zettlr') {
+        shouldOpenExternally = false
+      }
+
+      if (shouldOpenExternally) {
+        await shell.openPath(filePath)
+        return false
+      }
     }
 
     // If windowId is not provided, then use the last focused window
@@ -834,6 +872,13 @@ current contents from the editor somewhere else, and restart the application.`
 
     // After here, the document will in some way be opened.
     this._app.recentDocs.add(filePath)
+
+    const { openFiles, openWorkspaces } = this._app.config.get().app
+    if (!openFiles.includes(filePath) && openWorkspaces.every(p => !filePath.startsWith(p))) {
+      // The file just opened is outside the current opened roots -> add as a
+      // standalone root file.
+      this._app.config.addPath(filePath)
+    }
 
     if (leaf.tabMan.openFiles.map(x => x.path).includes(filePath)) {
       // File is already open -> simply set it as active
@@ -900,7 +945,8 @@ current contents from the editor somewhere else, and restart the application.`
     // don't have to do anything.
     const openFile = this.documents.find(doc => doc.filePath === filePath)
     if (openFile !== undefined && this.isModified(filePath) && numOpenInstances === 1) {
-      const result = await this._app.windows.askSaveChanges()
+      const detail = trans('File: %s', openFile.descriptor.name)
+      const result = await this._app.windows.askSaveChanges(detail)
       // 0 = Save, 1 = Don't save, 2 = Cancel
       if (result.response === 1) {
         // Clear the modification flag
@@ -948,25 +994,25 @@ current contents from the editor somewhere else, and restart the application.`
    *
    * @param   {string}  filePath  The file path in question
    */
-  public closeFileEverywhere (filePath: string): void {
-    for (const key in this._windows) {
-      const allLeafs = this._windows[key].getAllLeafs()
-      for (const leaf of allLeafs) {
-        if (leaf.tabMan.openFiles.map(x => x.path).includes(filePath)) {
-          leaf.tabMan.setPinnedStatus(filePath, false)
-          const success = leaf.tabMan.closeFile(filePath)
-          if (!success) {
-            continue
-          }
+  public async closeFileEverywhere (filePath: string): Promise<void> {
+    await this.forEachLeaf(async (tabMan, windowId, leafId) => {
+      if (tabMan.openFiles.map(x => x.path).includes(filePath)) {
+        tabMan.setPinnedStatus(filePath, false)
+        const success = tabMan.closeFile(filePath)
 
-          this.broadcastEvent(DP_EVENTS.CLOSE_FILE, { windowId: key, leafId: leaf.id, filePath })
+        if (!success) {
+          return false
+        }
 
-          if (leaf.tabMan.openFiles.length === 0) {
-            this.closeLeaf(key, leaf.id)
-          }
+        this.broadcastEvent(DP_EVENTS.CLOSE_FILE, { windowId, leafId, filePath })
+
+        if (tabMan.openFiles.length === 0) {
+          this.closeLeaf(windowId, leafId)
         }
       }
-    }
+
+      return true
+    })
 
     // We also must splice the document out of our provider
     const idx = this.documents.findIndex(doc => doc.filePath === filePath)
@@ -975,6 +1021,32 @@ current contents from the editor somewhere else, and restart the application.`
     }
 
     this.syncWatchedFilePaths()
+  }
+
+  /**
+   * For the provided root workspace directory at `filePath`,
+   * retrieve a list of filepaths representing every open file
+   * within the workspace.
+   *
+   * @param {string}      filePath  Path of the workspace directory
+   *
+   * @returns {string[]}            A list of file paths representing the
+   *                                open files within `filePath`.
+   */
+  public async getOpenFilesForWorkspace (workspacePath: string): Promise<string[]> {
+    const openFiles: string[] = []
+
+    await this.forEachLeaf(async (tabMan) => {
+      openFiles.push(
+        ...tabMan.openFiles
+          .filter(doc => doc.path.startsWith(workspacePath))
+          .map(doc => doc.path)
+      )
+
+      return false
+    })
+
+    return openFiles
   }
 
   /**
@@ -1201,7 +1273,7 @@ current contents from the editor somewhere else, and restart the application.`
    * concern.
    */
   private syncToConfig (): void {
-    const toSave: any = {}
+    const toSave: DocumentWindowsJSON = {}
     for (const key in this._windows) {
       toSave[key] = this._windows[key].toJSON()
     }
@@ -1488,9 +1560,11 @@ current contents from the editor somewhere else, and restart the application.`
 
     if (doc.descriptor.type === 'file') {
       // In case of an MD File increase the word or char count
+      const locale: string = this._app.config.get().appLang
       const ast = markdownToAST(content)
-      const newWordCount = countWords(ast)
-      const newCharCount = countChars(ast)
+      const counts = countAll(ast, locale)
+      const newWordCount = counts.words
+      const newCharCount = counts.chars
 
       this._app.stats.updateCounts(
         newWordCount - doc.lastSavedWordCount,
@@ -1505,18 +1579,19 @@ current contents from the editor somewhere else, and restart the application.`
 
     try {
       if (doc.descriptor.type === 'file') {
-        await FSALFile.save(
-          doc.descriptor,
-          content,
-          this._app.fsal.getMarkdownFileParser(),
-          null
-        )
+        const fileContents = doc.descriptor.bom + content.split('\n').join(doc.descriptor.linefeed)
+        await this._app.fsal.writeTextFile(doc.descriptor.path, fileContents)
+        doc.descriptor = await this._app.fsal.getDescriptorFor(doc.descriptor.path, false) as MDFileDescriptor
         await this.synchronizeDatabases() // The file may have gotten a library
       } else {
-        await FSALCodeFile.save(doc.descriptor, content, null)
+        await this._app.fsal.writeTextFile(doc.descriptor.path, content)
+        doc.descriptor = await this._app.fsal.getDescriptorFor(doc.descriptor.path, false) as CodeFileDescriptor
       }
-    } catch (err: any) {
-      dialog.showErrorBox(trans('Could not save file'), trans('Could not save file %s: %s', doc.descriptor.name, err.message))
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        dialog.showErrorBox(trans('Could not save file'), trans('Could not save file %s: %s', doc.descriptor.name, err.message))
+      }
+
       throw err
     }
 

@@ -32,7 +32,7 @@
           v-on:update="updateDynamics"
         >
           <FileItem
-            v-bind:obj="item.props"
+            v-bind:item="item.props"
             v-bind:active-file="activeDescriptor"
             v-bind:index="0"
             v-bind:window-id="windowId"
@@ -52,7 +52,7 @@
         v-for="item in getDirectoryContents"
         v-bind:key="item.id"
         v-bind:index="0"
-        v-bind:obj="item.props"
+        v-bind:item="item.props"
         v-bind:window-id="windowId"
         v-bind:active-file="activeDescriptor"
         v-on:create-file="handleOperation('file-new', item.id)"
@@ -92,20 +92,23 @@
  */
 
 import { trans } from '@common/i18n-renderer'
-import tippy from 'tippy.js'
+import tippy, { type Instance } from 'tippy.js'
 import FileItem from './FileItem.vue'
 import { RecycleScroller } from 'vue-virtual-scroller'
-import objectToArray from '@common/util/object-to-array'
 import matchQuery from './util/match-query'
 
 import { nextTick, ref, computed, watch, onUpdated } from 'vue'
-import { useConfigStore, useDocumentTreeStore, useWorkspacesStore } from 'source/pinia'
-import { type MaybeRootDescriptor, type AnyDescriptor } from '@dts/common/fsal'
+import { useConfigStore, useDocumentTreeStore } from 'source/pinia'
+import type { AnyDescriptor } from '@dts/common/fsal'
 import type { DocumentManagerIPCAPI } from 'source/app/service-providers/documents'
+import { useWorkspaceStore } from 'source/pinia/workspace-store'
+import { getSorter } from 'source/common/util/directory-sorter'
+import { retrieveChildrenAndSort } from './util/retrieve-children-and-sort'
+import { filterDescriptorChildren } from './util/filter-children'
 
 interface RecycleScrollerData {
   id: number
-  props: MaybeRootDescriptor
+  props: AnyDescriptor
 }
 
 const ipcRenderer = window.ipc
@@ -121,7 +124,7 @@ const emit = defineEmits<(e: 'lock-file-tree') => void>()
 const activeDescriptor = ref<AnyDescriptor|undefined>(undefined) // Can contain the active ("focused") item
 
 const documentTreeStore = useDocumentTreeStore()
-const workspacesStore = useWorkspacesStore()
+const workspaceStore = useWorkspaceStore()
 const configStore = useConfigStore()
 
 const selectedDirectory = computed(() => configStore.config.openDirectory)
@@ -130,7 +133,7 @@ const selectedDirDescriptor = computed(() => {
     return undefined
   }
 
-  return workspacesStore.getDir(selectedDirectory.value)
+  return workspaceStore.descriptorMap.get(selectedDirectory.value)
 })
 
 const noResultsMessage = trans('No results')
@@ -144,21 +147,38 @@ const rootElement = ref<HTMLDivElement|null>(null)
 
 const getDirectoryContents = computed<RecycleScrollerData[]>(() => {
   const dir = selectedDirDescriptor.value
-  if (dir === undefined) {
+  if (dir === undefined || dir.type !== 'directory') {
     return []
   }
 
-  const ret: RecycleScrollerData[] = []
-  const items = objectToArray(dir, 'children') as AnyDescriptor[]
-  for (let i = 0; i < items.length; i++) {
-    if (items[i].type !== 'other') {
-      ret.push({
-        id: i, // This helps the virtual scroller to adequately position the items
-        props: items[i] as MaybeRootDescriptor // The actual item
-      })
-    }
-  }
-  return ret
+  // Fetch all descriptors ...
+  const allDescriptors = [...workspaceStore.descriptorMap.keys()]
+    .filter(absPath => absPath.startsWith(dir.path))
+    .map(absPath => workspaceStore.descriptorMap.get(absPath)!)
+
+  // ... sort them recursively ...
+  const {
+    sorting,
+    sortFoldersFirst,
+    fileNameDisplay,
+    appLang,
+    fileMetaTime,
+  } = configStore.config
+
+  const sorter = getSorter(sorting, sortFoldersFirst, fileNameDisplay, appLang, fileMetaTime)
+
+  // ... and add them to our RecycleScroller.
+  const filter = filterDescriptorChildren()
+  const sortedDescendants = retrieveChildrenAndSort(dir, allDescriptors, sorter)
+    .filter(filter)
+    .map((props, id) => {
+      return {
+        id, // This helps the virtual scroller to adequately position the items
+        props, // The actual item
+      }
+    })
+
+  return sortedDescendants
 })
 
 // Add an additional layer of filtering: This function applies a potential
@@ -369,9 +389,10 @@ function scrollIntoView (): void {
   const quickFilterModifier = 40 // Height of the quick filter
 
   if (position < scrollTop) {
-    rootElement.value.scrollTop = position
+    rootElement.value.scrollTo({ top: position, behavior: 'smooth' })
   } else if (position > scrollTop + rootElement.value.offsetHeight - modifier) {
-    rootElement.value.scrollTop = position - rootElement.value.offsetHeight + modifier + quickFilterModifier
+    const top = position - rootElement.value.offsetHeight + modifier + quickFilterModifier
+    rootElement.value.scrollTo({ top, behavior: 'smooth' })
   }
 }
 
@@ -398,7 +419,7 @@ function updateDynamics (): void {
     // Either there's already an instance on the element,
     // then only update its contents ...
     if ('_tippy' in elem) {
-      (elem._tippy as any).setContent(elem.dataset.tippyContent)
+      (elem._tippy as Instance).setContent(elem.dataset.tippyContent ?? '')
     } else {
       // ... or there is none, so let's add a tippy instance.
       tippy(elem, {
@@ -410,7 +431,7 @@ function updateDynamics (): void {
   }
 }
 
-async function handleOperation (type: string, idx: number): Promise<void> {
+async function handleOperation (type: 'dir-new'|'file-new', idx: number): Promise<void> {
   // Creates files and directories, or duplicates a file.
   const source = getDirectoryContents.value.find(item => item.id === idx)?.props
   if (source === undefined) {

@@ -16,15 +16,82 @@
 
 import { displayFileContext } from './file-item-context'
 import { displayDirContext } from './dir-item-context'
-import { useConfigStore, useDocumentTreeStore, useWindowStateStore } from 'source/pinia'
-import type { MaybeRootDescriptor } from 'source/types/common/fsal'
+import { useConfigStore, useDocumentTreeStore, useWindowStateStore, useWorkspaceStore } from 'source/pinia'
+import type { AnyDescriptor } from 'source/types/common/fsal'
 import { ref, computed, type Ref, watch, nextTick } from 'vue'
+import { hasImageExt, hasPDFExt } from 'source/common/util/file-extention-checks'
+import makeValidUri from 'source/common/util/make-valid-uri'
 import type { DocumentManagerIPCAPI } from 'source/app/service-providers/documents'
 
 const ipcRenderer = window.ipc
 
+/**
+ * Close a file root path at `path`, including all open
+ * instances of the file.
+ *
+ * @param {string}  path    The filepath to close
+ */
+export function closeFile (path: string): void {
+  const workspaceStore = useWorkspaceStore()
+
+  // First check if the path is actually a root path
+  if (!workspaceStore.rootDescriptors.find(r => r.path === path)) {
+    return
+  }
+
+  ipcRenderer.invoke('documents-provider', {
+    command: 'close-file-everywhere',
+    payload: { path }
+  } as DocumentManagerIPCAPI)
+    .catch(e => console.error(e))
+
+  ipcRenderer.invoke('application', {
+    command: 'root-close',
+    payload: path
+  })
+    .catch(err => console.error(err))
+}
+
+/**
+ * Close a workspace root path at `path`, including all open files
+ * within the workspace
+ *
+ * @param {string}  path    The workspace path to close
+ */
+export function closeWorkspace (path: string): void {
+  const workspaceStore = useWorkspaceStore()
+
+  // First check if the path is actually a root path
+  if (!workspaceStore.rootDescriptors.find(r => r.path === path)) {
+    return
+  }
+
+  ipcRenderer.invoke('documents-provider', {
+    command: 'get-open-workspace-files',
+    payload: {
+      path: path,
+    }
+  } as DocumentManagerIPCAPI)
+    .then(openFiles => {
+      for (const file of openFiles) {
+        ipcRenderer.invoke('documents-provider', {
+          command: 'close-file-everywhere',
+          payload: { path: file }
+        } as DocumentManagerIPCAPI)
+          .catch(e => console.error(e))
+      }
+    })
+    .catch(e => console.error(e))
+
+  ipcRenderer.invoke('application', {
+    command: 'root-close',
+    payload: path
+  })
+    .catch(err => console.error(err))
+}
+
 export function useItemComposable (
-  object: MaybeRootDescriptor,
+  object: AnyDescriptor,
   rootElement: Ref<HTMLElement|null>,
   windowId: string,
   nameEditingInput: Ref<HTMLInputElement|null>
@@ -98,7 +165,39 @@ export function useItemComposable (
           newTab: middleClick || (alt && type === 'file') // Force a new tab in this case.
         }
       } as DocumentManagerIPCAPI)
+        .then(() => {
+          configStore.setConfigValue('openDirectory', obj.value.dir)
+          // Finally, since it's a directory, uncollapse it.
+          if (!windowStateStore.uncollapsedDirectories.includes(obj.value.dir)) {
+            windowStateStore.uncollapsedDirectories.push(obj.value.dir)
+          }
+        })
         .catch(e => console.error(e))
+    } else if (type === 'other') {
+      const { files } = configStore.config
+      // Determine if we can open the file in Zettlr
+      if (
+        (hasImageExt(obj.value.path) && files.images.openWith === 'zettlr') ||
+        (hasPDFExt(obj.value.path) && files.pdf.openWith === 'zettlr')
+      ) {
+        ipcRenderer.invoke('documents-provider', {
+          command: 'open-file',
+          // We leave leafId undefined
+          payload: { path: obj.value.path, windowId }
+        })
+          .then(() => {
+            configStore.setConfigValue('openDirectory', obj.value.dir)
+            // Finally, since it's a directory, uncollapse it.
+            if (!windowStateStore.uncollapsedDirectories.includes(obj.value.dir)) {
+              windowStateStore.uncollapsedDirectories.push(obj.value.dir)
+            }
+          })
+          .catch(e => console.error(e))
+      } else {
+        // Open the file externally (again, NOTE, this only works because main
+        // intercepts every navigation attempt).
+        window.location.href = makeValidUri(obj.value.path)
+      }
     } else if (alt) {
       // Select the parent directory
       configStore.setConfigValue('openDirectory', obj.value.dir)
@@ -110,6 +209,7 @@ export function useItemComposable (
       }
     }
   }
+
   /**
    * Handles a context menu on a file or directory item.
    *
@@ -135,11 +235,7 @@ export function useItemComposable (
           })
             .catch(err => console.error(err))
         } else if (clickedID === 'menu.close_workspace') {
-          ipcRenderer.invoke('application', {
-            command: 'root-close',
-            payload: obj.value.path
-          })
-            .catch(err => console.error(err))
+          closeWorkspace(obj.value.path)
         } else if (clickedID === 'menu.project_build') {
           // We should trigger an export of this project.
           ipcRenderer.invoke('application', {
@@ -185,12 +281,7 @@ export function useItemComposable (
         } else if (clickedID === 'properties') {
           showPopover.value = true
         } else if (clickedID === 'menu.close_file') {
-          // The close_file item is only shown in the tree view on root files
-          ipcRenderer.invoke('application', {
-            command: 'root-close',
-            payload: obj.value.path
-          })
-            .catch(err => console.error(err))
+          closeFile(obj.value.path)
         }
       })
     }
@@ -248,7 +339,7 @@ export function useItemComposable (
       .finally(() => { nameEditing.value = false })
   }
 
-  function updateObject (newObject: MaybeRootDescriptor): void {
+  function updateObject (newObject: AnyDescriptor): void {
     obj.value = newObject
   }
 

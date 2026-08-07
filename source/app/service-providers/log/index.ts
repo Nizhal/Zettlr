@@ -15,6 +15,7 @@
 import path from 'path'
 import { promises as fs } from 'fs'
 import { app, ipcMain } from 'electron'
+// @ts-expect-error Somehow TypeScript is very unhappy about this import.
 import chalk from 'chalk'
 import ProviderContract from '../provider-contract'
 
@@ -247,9 +248,15 @@ export default class LogProvider extends ProviderContract {
    */
   _toString (message: LogMessage): string {
     let level = 'Verbose'
-    if (message.level === LogLevel.info) level = 'Info'
-    if (message.level === LogLevel.warning) level = 'Warning'
-    if (message.level === LogLevel.error) level = 'Error'
+    if (message.level === LogLevel.info) {
+      level = 'Info'
+    }
+    if (message.level === LogLevel.warning) {
+      level = 'Warning'
+    }
+    if (message.level === LogLevel.error) {
+      level = 'Error'
+    }
 
     let details = ''
     if (message.details instanceof Error) {

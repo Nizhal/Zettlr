@@ -22,13 +22,14 @@
               'outbound': item.props.link === 'outbound',
               'bidirectional': item.props.link === 'bidirectional'
             }"
+            v-bind:title="item.props.path"
             v-on:click.stop="requestFile($event, item.props.path)"
             v-on:dragstart="beginDragRelatedFile($event, item.props.path)"
           >
             <span
               class="filename"
               draggable="true"
-            >{{ getRelatedFileName(item.props.path) }}</span>
+            >{{ getDocumentTitle(item.props.path) }}</span>
             <span class="icons">
               <cds-icon
                 v-if="item.props.tags.length > 0"
@@ -64,10 +65,11 @@
 import { trans } from '@common/i18n-renderer'
 import { RecycleScroller } from 'vue-virtual-scroller'
 import { ref, computed, watch } from 'vue'
-import { useConfigStore, useWorkspacesStore, useDocumentTreeStore, useTagsStore } from 'source/pinia'
-import { type CodeFileDescriptor, type MDFileDescriptor } from '@dts/common/fsal'
+import { useDocumentTreeStore, useTagsStore, useWorkspaceStore } from 'source/pinia'
+import type { OtherFileDescriptor, CodeFileDescriptor, MDFileDescriptor } from '@dts/common/fsal'
 import { pathBasename } from '@common/util/renderer-path-polyfill'
 import type { DocumentManagerIPCAPI } from 'source/app/service-providers/documents'
+import getDocumentTitle from '../util/get-document-title'
 
 export interface RelatedFile {
   file: string
@@ -78,8 +80,7 @@ export interface RelatedFile {
 
 const ipcRenderer = window.ipc
 
-const workspacesStore = useWorkspacesStore()
-const configStore = useConfigStore()
+const workspaceStore = useWorkspaceStore()
 const tagStore = useTagsStore()
 const documentTreeStore = useDocumentTreeStore()
 
@@ -114,10 +115,7 @@ const scrollerRelatedFiles = computed(() => {
 })
 
 const lastActiveFile = computed(() => documentTreeStore.lastLeafActiveFile)
-const roots = computed(() => workspacesStore.roots)
-const useH1 = computed(() => configStore.config.fileNameDisplay.includes('heading'))
-const useTitle = computed(() => configStore.config.fileNameDisplay.includes('title'))
-const displayMdExtensions = computed(() => configStore.config.display.markdownFileExtensions)
+const roots = computed(() => workspaceStore.rootDescriptors)
 const lastLeafId = computed(() => documentTreeStore.lastLeafId)
 
 watch(lastActiveFile, () => {
@@ -134,7 +132,7 @@ async function recomputeRelatedFiles (): Promise<void> {
     return
   }
 
-  const descriptor: MDFileDescriptor|CodeFileDescriptor|undefined = await ipcRenderer.invoke('application', {
+  const descriptor: MDFileDescriptor|CodeFileDescriptor|OtherFileDescriptor|undefined = await ipcRenderer.invoke('fsal', {
     command: 'get-descriptor',
     payload: lastActiveFile.value.path
   })
@@ -181,7 +179,13 @@ async function recomputeRelatedFiles (): Promise<void> {
   // This relation is not as important as explicit links, so they should
   // be below the inbound linked files.
 
-  const recommendations = tagStore.tags.filter(tag => descriptor.tags.includes(tag.name))
+  const recommendations = tagStore.tags.filter(tag => {
+    if (descriptor.type === 'other') {
+      return false
+    }
+
+    return descriptor.tags.includes(tag.name)
+  })
 
   for (const tagRecord of recommendations) {
     for (const filePath of tagRecord.files) {
@@ -235,7 +239,7 @@ async function recomputeRelatedFiles (): Promise<void> {
 }
 
 function beginDragRelatedFile (event: DragEvent, filePath: string): void {
-  const descriptor = workspacesStore.getFile(filePath)
+  const descriptor = workspaceStore.descriptorMap.get(filePath)
 
   if (descriptor === undefined) {
     console.error('Cannot begin dragging related file: Descriptor not found')
@@ -262,26 +266,7 @@ function requestFile (event: MouseEvent, filePath: string): void {
     .catch(e => console.error(e))
 }
 
-function getRelatedFileName (filePath: string): string {
-  const descriptor = workspacesStore.getFile(filePath)
-  if (descriptor === undefined || descriptor.type !== 'file') {
-    return filePath
-  }
-
-  if (useTitle.value && descriptor.frontmatter !== null && typeof descriptor.frontmatter.title === 'string') {
-    return descriptor.frontmatter.title
-  } else if (useH1.value && descriptor.firstHeading !== null) {
-    return descriptor.firstHeading
-  } else if (displayMdExtensions.value) {
-    return descriptor.name
-  } else {
-    return descriptor.name.replace(descriptor.ext, '')
-  }
-}
-
 function getTagsLabel (tagList: string[]): string {
   return trans('This relation is based on %s shared tags: %s', tagList.length, tagList.join(', '))
 }
 </script>
-@common/util/renderer-path-polyfill
-../../pinia

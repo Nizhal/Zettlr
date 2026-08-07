@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "target": "ES2019",
+    "target": "ES2024",
     "allowJs": true,
     "module": "commonjs",
     "skipLibCheck": true,
@@ -15,15 +15,13 @@
     "noImplicitAny": true,
     "sourceMap": true,
     "outDir": "dist",
-    "moduleResolution": "node",
+    "rootDir": ".",
     "resolveJsonModule": true,
-    "downlevelIteration": true,
-    "baseUrl": ".",
     "paths": {
-      "source/*": ["source/*"],
-      "@common/*": ["source/common/*"],
-      "@providers/*": ["source/app/service-providers/*"],
-      "@dts/*": ["source/types/*"]
+      "source/*": ["./source/*"],
+      "@common/*": ["./source/common/*"],
+      "@providers/*": ["./source/app/service-providers/*"],
+      "@dts/*": ["./source/types/*"]
     }
   },
   "include": [

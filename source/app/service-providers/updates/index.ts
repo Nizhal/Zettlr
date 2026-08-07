@@ -21,8 +21,9 @@ import {
 
 import path from 'path'
 import crypto from 'crypto'
-import got, { type Response } from 'got'
+import got, { RequestError, type Response } from 'got'
 import semver from 'semver'
+import { net } from 'electron'
 
 import { ipcMain, app, shell, dialog } from 'electron'
 import { trans } from '@common/i18n-main'
@@ -293,14 +294,35 @@ export default class UpdateProvider extends ProviderContract {
    * @return {Promise} Resolves only when there is an update available.
    */
   async check (): Promise<void> {
+    if (!net.online || __UPDATES_DISABLED__ === '1') {
+      // Don't check if we don't have an internet connection; preserve the last
+      // state so that the user sees what the most recent result was. We also
+      // never check if updates have been disabled at build time.
+      return
+    }
+
     // First, reset the update state
     this._resetState()
 
     try {
       this._logger.info(`[Update Provider] Checking ${REPO_URL} for application updates ...`)
+      let platformString = ''
+      if (process.platform === 'win32') {
+        platformString = `Windows NT 10.0; ${process.arch}`
+      }
+      if (process.platform === 'darwin') {
+        platformString = `Macintosh; Intel Mac OS X ${process.getSystemVersion()}; ${process.arch}`
+      }
+      if (process.platform === 'linux') {
+        platformString = `Linux ${process.arch === 'x64' ? 'x86_64' : process.arch}`
+      }
+
       const response: Response<string> = await got(REPO_URL, {
         timeout: { request: 5000 },
         method: 'GET',
+        headers: {
+          'User-Agent': `Zettlr/${CUR_VER} (${platformString})`
+        },
         searchParams: new URLSearchParams([
           [ 'accept-beta', this._config.get('checkForBeta') ]
         ])
@@ -335,37 +357,53 @@ export default class UpdateProvider extends ProviderContract {
           this._windows.showUpdateWindow()
         }
       } else {
-        this._logger.info(`[Update Provider] No new update available. Current version is ${this._updateState.tagName}.`)
+        this._logger.verbose(`[Update Provider] No new update available. Current version is ${this._updateState.tagName}.`)
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (err instanceof UpdateError) {
         this._reportError(err.code, err.message, true)
         return
       }
 
+      if (!(err instanceof RequestError)) {
+        // Report this error
+        this._reportError('Unexpected error', 'An unexpected error occurred while checking for updates', true)
+        return
+      }
+
+      const statusCode = err.response?.statusCode ?? -1
+
       // See for all errors https://github.com/sindresorhus/got/blob/main/documentation/8-errors.md
       // If we have an ENOTFOUND error there is no response and no statusCode
       // so we'll use TypeScript shortcuts to save us from ugly errors.
       const notFoundError = err.code === 'ENOTFOUND'
-      const serverError = err?.response?.statusCode >= 500
-      const clientError = err?.response?.statusCode >= 400
-      const redirectError = err?.response?.statusCode >= 300
+      const timeoutError = err.code === 'ETIMEDOUT'
+      const serverError = statusCode >= 500
+      const clientError = statusCode >= 400 && statusCode < 500
+      const redirectError = statusCode >= 300 && statusCode < 400
 
       // Give a more detailed error message.
       if (serverError) {
-        const msg = trans('Could not check for updates: Server Error (Status code: %s)', err.response.statusCode)
+        const msg = trans('Could not check for updates: Server Error (Status code: %s)', statusCode)
         this._reportError(err.code as string, msg, false)
       } else if (clientError) {
-        const msg = trans('Could not check for updates: Client Error (Status code: %s)', err.response.statusCode)
+        const msg = trans('Could not check for updates: Client Error (Status code: %s)', statusCode)
         this._reportError(err.code as string, msg, false)
       } else if (redirectError) {
-        const msg = trans('Could not check for updates: The server tried to redirect (Status code: %s)', err.response.statusCode)
+        const msg = trans('Could not check for updates: The server tried to redirect (Status code: %s)', statusCode)
         this._reportError(err.code as string, msg, true) // This is odd and should be reported
       } else if (notFoundError) {
         // getaddrinfo has reported that the host has not been found.
         // This normally only happens if the networking interface is
         // offline. In this case, no need to inform the user every hour.
         const msg = trans('Could not check for updates: Could not establish connection')
+        this._reportError(err.code as string, msg, false)
+      } else if (timeoutError) {
+        // This can happen if the internet is either really bad or drops during the
+        // connection attempt. In any case, this can happen often with, e.g.,
+        // company VPNs and other firewalls, and would be distracting to see every
+        // hour or so. See #5944 for context.
+        const msg = trans('Could not check for updates: The connection attempt timed out.')
         this._reportError(err.code as string, msg, false)
       } else {
         // Something else has occurred. GotError objects have a name property.
@@ -391,13 +429,13 @@ export default class UpdateProvider extends ProviderContract {
     const parsedResponse = JSON.parse(response.body) as ServerAPIResponse
     const state = getUpdateState()
 
-    const lv = semver.parse(CUR_VER) // localVersion
-    const rv = semver.parse(parsedResponse.tag_name) // remoteVersion
+    const localVersion = semver.parse(CUR_VER) // localVersion
+    const remoteVersion = semver.parse(parsedResponse.tag_name) // remoteVersion
 
-    if (lv === null || rv === null) {
+    if (localVersion === null || remoteVersion === null) {
       this._cleanup()
       const error = new Error('Cannot complete check for new version: Either the local or remote version could not be parsed!')
-      this._logger.error(error.message, { localVersion: lv, remoteVersion: rv })
+      this._logger.error(error.message, { localVersion, remoteVersion })
       throw error
     }
   
@@ -408,20 +446,21 @@ export default class UpdateProvider extends ProviderContract {
     // "postrelease"...? I don't think this term exists). Here we have to do a
     // bit of manual engineering to account for this edge case.
 
-    // First, store the regular check in the variable ...
-    state.updateAvailable = semver.lt(lv, rv)
-    // ... and then check if the versions match up except for the local one
-    // having "nightly" in its prerelease array.
-    if (
-      lv.major === rv.major && lv.minor === rv.minor && lv.patch === rv.patch &&
-      lv.prerelease.includes('nightly')
-    ) {
-      state.updateAvailable = false
-    }
+    // NOTE: Zettlr makes use of major, minor, and patch versions, plus "betas"
+    // (beta, beta.1, beta.2, etc.), and as build-identifiers "nightly".
+    // This ensures that `semver.lt` will always work properly, indicating that
+    // nightlies will never attempt to update to the same-but-older version:
+    // semver.lt('4.0.0-beta+nightly', '4.0.0-beta' returns false).
+    state.updateAvailable = semver.lt(localVersion, remoteVersion)
 
     // Adapt the rest of the state
     state.tagName = parsedResponse.tag_name
-    state.changelog = md2html(parsedResponse.body, (_c1, _c2) => undefined)
+    // NOTE: We do not sanitize the HTML here. Instead we sanitize it in the
+    // update window directly.
+    state.changelog = await md2html(parsedResponse.body, {
+      onCitation: (_c1, _c2) => undefined,
+      zknLinkFormat: 'link|title'
+    })
     state.prerelease = parsedResponse.prerelease
     state.releasePage = parsedResponse.html_url
 
@@ -482,8 +521,9 @@ export default class UpdateProvider extends ProviderContract {
           this._logger.info(`[Update Provider] Found SHA256 checksum for ${release[1]}`)
           this._sha256Data.set(release[1], release[0])
         })
-    } catch (err: any) {
-      throw new UpdateError('SHA_CHECKSUM_ERR', trans('Cannot retrieve SHA256 checksums: %s', err.message), { cause: err })
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      throw new UpdateError('SHA_CHECKSUM_ERR', trans('Cannot retrieve SHA256 checksums: %s', message), { cause: err })
     }
   }
 
@@ -607,9 +647,10 @@ export default class UpdateProvider extends ProviderContract {
         await shell.openPath(this._updateState.full_path)
       }
       app.quit()
-    } catch (err: any) {
+    } catch (err: unknown) {
       this._cleanup(false)
-      this._reportError('EOPEN', trans('Could not start update. Please retry or update manually. Error was: %s', err.message), true)
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      this._reportError('EOPEN', trans('Could not start update. Please retry or update manually. Error was: %s', message), true)
     }
   }
 
@@ -624,8 +665,9 @@ export default class UpdateProvider extends ProviderContract {
     if (this._downloadWriteStream !== undefined) {
       try {
         this._downloadWriteStream.close()
-      } catch (err: any) {
-        this._logger.warning(`[Update Provider] Could not close write stream: ${err.message as string}`, err)
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Unknown error'
+        this._logger.warning(`[Update Provider] Could not close write stream: ${message}`, err)
       }
       this._downloadWriteStream = undefined
     }
@@ -633,8 +675,9 @@ export default class UpdateProvider extends ProviderContract {
     if (this._downloadReadStream !== undefined) {
       try {
         this._downloadReadStream.close()
-      } catch (err: any) {
-        this._logger.warning(`[Update Provider] Could not close read stream: ${err.message as string}`, err)
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Unknown error'
+        this._logger.warning(`[Update Provider] Could not close read stream: ${message}`, err)
       }
       this._downloadWriteStream = undefined
     }

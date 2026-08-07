@@ -47,7 +47,6 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import { type GraphArc, type GraphVertex, type LinkGraph } from '@dts/common/graph'
 import * as d3 from 'd3'
 import Checkbox from '@common/vue/form/elements/CheckboxControl.vue'
 import ButtonElement from '@common/vue/form/elements/ButtonControl.vue'
@@ -56,9 +55,10 @@ import SelectElement from '@common/vue/form/elements/SelectControl.vue'
 import TextElement from '@common/vue/form/elements/TextControl.vue'
 import tippy from 'tippy.js'
 import { type SimulationNodeDatum } from 'd3'
-import DirectedGraph from '@providers/links/directed-graph'
+import DirectedGraph, { type GraphArc, type GraphVertex, type LinkGraph } from './directed-graph'
 import { type MDFileDescriptor } from '@dts/common/fsal'
 import type { DocumentManagerIPCAPI } from 'source/app/service-providers/documents'
+import getDocumentTitle from 'source/win-main/util/get-document-title'
 
 const ipcRenderer = window.ipc
 
@@ -85,7 +85,11 @@ const zoomFactor = ref(1)
 const graphElement = ref<d3.Selection<SVGSVGElement, undefined, null, undefined>|null>(null)
 const simulation = ref<d3.Simulation<d3.SimulationNodeDatum, undefined>|null>(null)
 // Add an observer to resize the SVG element as necessary
-const controlsObserver = new ResizeObserver(updateGraphSize)
+const controlsObserver = new ResizeObserver(() => {
+  requestAnimationFrame(() => {
+    updateGraphSize()
+  })
+})
 
 const selectableComponents = computed(() => {
   const ret: Record<string, string> = {
@@ -496,11 +500,6 @@ async function buildGraph (): Promise<void> {
   const dbObject: Record<string, string[]> = await ipcRenderer.invoke('link-provider', { command: 'get-link-database' })
   const database = new Map<string, string[]>(Object.entries(dbObject))
 
-  const fileNameDisplay: string = window.config.get('fileNameDisplay')
-  const useH1 = fileNameDisplay.includes('heading')
-  const useTitle = fileNameDisplay.includes('title')
-  const displayMdExtensions = window.config.get('display.markdownFileExtensions') as boolean
-
   buildProgress.value.currentFile = 0
   buildProgress.value.totalFiles = Object.entries(dbObject).length
   componentFilter.value = ''
@@ -515,21 +514,13 @@ async function buildGraph (): Promise<void> {
     buildProgress.value.currentFile += 1
     // We have to specifically add the source, since isolates will have 0
     // targets, and hence we cannot rely on the Graph adding these vertices
-    const sourceDescriptor: MDFileDescriptor|undefined = await ipcRenderer.invoke('application', { command: 'get-descriptor', payload: sourcePath })
+    const sourceDescriptor: MDFileDescriptor|undefined = await ipcRenderer.invoke('fsal', { command: 'get-descriptor', payload: sourcePath })
     if (sourceDescriptor === undefined) {
       console.warn(`Could not find descriptor for ${sourcePath}. Not adding to graph.`)
       continue
     }
 
-    if (useTitle && sourceDescriptor.yamlTitle !== undefined) {
-      DG.addVertex(sourcePath, sourceDescriptor.yamlTitle)
-    } else if (useH1 && sourceDescriptor.firstHeading != null) {
-      DG.addVertex(sourcePath, sourceDescriptor.firstHeading)
-    } else if (displayMdExtensions) {
-      DG.addVertex(sourcePath, sourceDescriptor.name)
-    } else {
-      DG.addVertex(sourcePath, sourceDescriptor.name.replace(sourceDescriptor.ext, ''))
-    }
+    DG.addVertex(sourcePath, getDocumentTitle(sourceDescriptor))
 
     for (const target of targets) {
       // Before adding a target, we MUST resolve the link to an actual file
@@ -547,15 +538,7 @@ async function buildGraph (): Promise<void> {
           DG.addVertex(target, target)
         } else {
           resolvedLinks.set(target, found.path)
-          if (useTitle && found.yamlTitle !== undefined) {
-            DG.addVertex(found.path, found.yamlTitle)
-          } else if (useH1 && found.firstHeading != null) {
-            DG.addVertex(found.path, found.firstHeading)
-          } else if (displayMdExtensions) {
-            DG.addVertex(found.path, found.name)
-          } else {
-            DG.addVertex(found.path, found.name.replace(found.ext, ''))
-          }
+          DG.addVertex(found.path, getDocumentTitle(found))
         }
       }
       DG.addArc(sourcePath, resolvedLinks.get(target)!)

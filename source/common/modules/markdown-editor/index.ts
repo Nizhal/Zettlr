@@ -19,7 +19,7 @@
 
 // Import our additional styles we need to put here since we don't have a Vue
 // component for the editor itself.
-import './editor.less'
+import './editor.css'
 
 /**
  * APIs
@@ -27,14 +27,16 @@ import './editor.less'
 import EventEmitter from 'events'
 
 // CodeMirror imports
-import { EditorView } from '@codemirror/view'
+import { Decoration, type DecorationSet, EditorView } from '@codemirror/view'
 import {
+  type EditorSelection,
   EditorState,
   Text,
+  type StateEffect,
   type Extension,
   type SelectionRange
 } from '@codemirror/state'
-import { syntaxTree } from '@codemirror/language'
+import { foldEffect, foldState, syntaxTree } from '@codemirror/language'
 
 // Keymaps/Input modes
 import { emacs } from '@replit/codemirror-emacs'
@@ -56,7 +58,7 @@ import {
   getTexExtensions,
   getYAMLExtensions,
   inputModeCompartment,
-  getMainEditorThemes
+  getMainEditorThemes,
 } from './editor-extension-sets'
 
 import {
@@ -72,13 +74,13 @@ import {
   applyComment,
   applyTaskList,
   insertImage,
-  insertLink
+  insertLink,
+  applyPandocDivOrSpan
 } from './commands/markdown'
 import { addNewFootnote } from './commands/footnotes'
 
 // Utilities
 import { copyAsHTML, pasteAsPlain } from './util/copy-paste-cut'
-import openMarkdownLink from './util/open-markdown-link'
 import { highlightRangesEffect } from './plugins/highlight-ranges'
 
 import safeAssign from '@common/util/safe-assign'
@@ -91,11 +93,14 @@ import {
   type PushUpdateCallback
 } from './plugins/remote-doc'
 import { markdownToAST } from '../markdown-utils'
-import { countField } from './plugins/statistics-fields'
-import type { SyntaxNode } from '@lezer/common'
-import { darkModeEffect } from './theme/dark-mode'
+import { countField, updateWordCountEffect } from './plugins/statistics-fields'
+import { useDarkModeEditor, darkModeEffect } from './theme/dark-mode'
 import { editorMetadataFacet } from './plugins/editor-metadata'
 import { projectInfoUpdateEffect, type ProjectInfo } from './plugins/project-info-field'
+import { moveSection } from './commands/move-section'
+import { parsePandocAttributes } from 'source/common/pandoc-util/parse-pandoc-attributes'
+import { closeSearchPanel, openSearchPanel, searchPanelOpen } from '@codemirror/search'
+import { clickListeners } from './plugins/click-listeners'
 
 export interface DocumentWrapper {
   path: string
@@ -146,6 +151,34 @@ export interface DocumentAuthorityAPI {
    * Used to push updates to the document authority
    */
   pushUpdates: PushUpdateCallback
+}
+
+/**
+ * This interface describes a persistent state for the EditorView, meaning some
+ * state that should survive destruction and re-instantiation of the same
+ * EditorView. It holds information that should be restored during, e.g.,
+ * switching tabs, which includes a scroll snapshot and the selection(s). By
+ * passing this information to a new MarkdownEditor instance, the editor can
+ * restore this quickly. The caller/manager of a set of MarkdownEditor instances
+ * should keep track of these, and extract them from the MarkdownEditor instance
+ * before unmounting it, e.g., via a Map.
+ */
+export interface EditorViewPersistentState {
+  /**
+   * A scroll snapshot from the editor. Used to properly restore the scroll
+   * position.
+   */
+  scrollSnapshot: StateEffect<any>
+  /**
+   * A selection object. Used to properly restore the cursor position and any
+   * selections within the editor.
+   */
+  selection: EditorSelection
+
+  /**
+   * A decoration set containing currently folded ranges.
+   */
+  foldedRanges: DecorationSet
 }
 
 export default class MarkdownEditor extends EventEmitter {
@@ -216,7 +249,8 @@ export default class MarkdownEditor extends EventEmitter {
     readonly windowId: string,
     representedDocument: string,
     authorityAPI: DocumentAuthorityAPI,
-    configOverride?: Partial<EditorConfiguration>
+    configOverride?: Partial<EditorConfiguration>,
+    persistentState?: EditorViewPersistentState
   ) {
     super() // Set up the event emitter
 
@@ -243,7 +277,7 @@ export default class MarkdownEditor extends EventEmitter {
     })
 
     // ... and immediately begin loading the document
-    this.loadDocument().catch(err => console.error(err))
+    this.loadDocument(persistentState).catch(err => console.error(err))
   }
 
   /**
@@ -272,20 +306,28 @@ export default class MarkdownEditor extends EventEmitter {
         if (update.docChanged) {
           this.emit('change')
         }
+
         if (update.focusChanged && this._instance.hasFocus) {
           this.emit('focus')
         }
+
         if (update.selectionSet) {
           this.emit('cursorActivity')
+          this.emit('docUpdate')
         }
 
-        // Listen for config updates, and parse them into the internal cache. We
-        // do it this way, because the editor itself is also capable of changing
-        // its configuration (e.g., via the statusbar). This way we ensure that
-        // both external updates (via setOptions) as well as internal updates
-        // both end up in our cache.
         for (const transaction of update.transactions) {
           for (const effect of transaction.effects) {
+            // Listen for word count updates
+            if (effect.is(updateWordCountEffect)) {
+              this.emit('docUpdate')
+            }
+
+            // Listen for config updates, and parse them into the internal cache. We
+            // do it this way, because the editor itself is also capable of changing
+            // its configuration (e.g., via the statusbar). This way we ensure that
+            // both external updates (via setOptions) as well as internal updates
+            // both end up in our cache.
             if (effect.is(reloadStateEffect)) {
               // ATTENTION: The document state is out of sync with the document
               // authority, so we must reload it.
@@ -295,87 +337,25 @@ export default class MarkdownEditor extends EventEmitter {
           }
         }
       },
-      domEventsListeners: {
-        mousedown (event, view) {
-          const cmd = event.metaKey && process.platform === 'darwin'
-          const ctrl = event.ctrlKey && process.platform !== 'darwin'
-          if (!cmd && !ctrl) {
-            return false
-          }
-
-          const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
-          if (pos === null) {
-            return false
-          }
-
-          const nodeAt = syntaxTree(view.state).resolve(pos, 0)
-
-          // Both plain URLs as well as Zettelkasten links and tags are
-          // implemented on the syntax tree.
-          if (nodeAt.type.name === 'URL') {
-            // We found a plain link!
-            const url = view.state.sliceDoc(nodeAt.from, nodeAt.to)
-            if (url.startsWith('[[') && url.endsWith(']]')) {
-              editorInstance.emit('zettelkasten-link', url.substring(2, url.length - 2))
-            } else {
-              openMarkdownLink(url, view)
-            }
-            event.preventDefault()
-            return true
-          } else if ([ 'ZknLinkContent', 'ZknLinkTitle', 'ZknLinkPipe' ].includes(nodeAt.type.name)) {
-            // We found a Zettelkasten link!
-            event.preventDefault()
-            // In these cases, nodeAt.parent is always a ZettelkastenLink
-            const contentNode = nodeAt.parent?.getChild('ZknLinkContent')
-            if (contentNode != null) {
-              const linkContents = view.state.sliceDoc(contentNode.from, contentNode.to)
-              editorInstance.emit('zettelkasten-link', linkContents)
-            }
-            return true
-          } else if (nodeAt.type.name === 'ZknTagContent') {
-            // A tag!
-            const tagContents = view.state.sliceDoc(nodeAt.from, nodeAt.to)
-            editorInstance.emit('zettelkasten-tag', tagContents)
-            event.preventDefault()
-            return true
-          }
-
-          // Lastly, the user may have clicked somewhere in a link. However,
-          // since the link description can take various inline elements, we
-          // have to recursively move up the tree until we find a 'Link' element
-          // or abort if we reach the top
-          let currentNode: SyntaxNode|null = nodeAt
-          while (currentNode !== null && currentNode.name !== 'Link') {
-            currentNode = currentNode.parent
-          }
-
-          if (currentNode !== null) {
-            // We have a link
-            const urlNode = currentNode.getChild('URL')
-            if (urlNode !== null) {
-              const url = view.state.sliceDoc(urlNode.from, urlNode.to)
-              if (url.startsWith('[[') && url.endsWith(']]')) {
-                editorInstance.emit('zettelkasten-link', url.substring(2, url.length - 2))
-              } else {
-                openMarkdownLink(url, view)
-              }
-              event.preventDefault()
-              return true
-            }
-          }
+      domEventsListeners: clickListeners({
+        onWikiLink (url) {
+          editorInstance.emit('zettelkasten-link', url)
+        },
+        onTag (tag) {
+          editorInstance.emit('zettelkasten-tag', tag)
         }
-      }
+      })
     }
 
     switch (type) {
       case DocumentType.Markdown:
         return getMarkdownExtensions(options)
-      case DocumentType.JSON:
-        return getJSONExtensions(options)
-      case DocumentType.YAML:
-        return getYAMLExtensions(options)
       case DocumentType.LaTeX:
         return getTexExtensions(options)
+      case DocumentType.YAML:
+        return getYAMLExtensions(options)
+      case DocumentType.JSON:
+        return getJSONExtensions(options)
     }
   }
 
@@ -383,7 +363,7 @@ export default class MarkdownEditor extends EventEmitter {
    * Loads the document from main and sets up everything required to display and
    * edit it.
    */
-  async loadDocument (): Promise<void> {
+  async loadDocument (persistentState?: EditorViewPersistentState): Promise<void> {
     const { content, type, startVersion } = await this.authority.fetchDoc(this.representedDocument)
 
     // The documents contents have changed, so we must recreate the state
@@ -397,6 +377,23 @@ export default class MarkdownEditor extends EventEmitter {
     })
 
     this._instance.setState(state)
+
+    if (persistentState !== undefined) {
+      // Now that the correct document has been loaded, there will be content
+      // and we can restore the persisted information.
+      const { scrollSnapshot, selection, foldedRanges } = persistentState
+
+      const effects: StateEffect<any>[] = [scrollSnapshot]
+
+      const cursor = foldedRanges.iter()
+      while (cursor.value) {
+        effects.push(foldEffect.of({ from: cursor.from, to: cursor.to }))
+        cursor.next()
+      }
+
+      this._instance.dispatch({ selection, effects })
+    }
+
     // Ensure the theme switcher picks the state change up; this somehow doesn't
     // properly work after the document has been mounted to the DOM.
     this._instance.dispatch({ effects: configUpdateEffect.of(this.config) })
@@ -415,6 +412,24 @@ export default class MarkdownEditor extends EventEmitter {
     }
 
     this._instance.focus()
+
+    this.emit('loaded')
+  }
+
+  /**
+   * Returns an object containing information needed to refresh the entire
+   * editor instance after it being unmounted. Request this once before
+   * unmounting this instance, and provide it back to a new instance when you
+   * re-instantiate the same document again.
+   *
+   * @return  {EditorViewPersistentState}  The persistent state object.
+   */
+  public get persistentState (): EditorViewPersistentState {
+    return {
+      scrollSnapshot: this._instance.scrollSnapshot(),
+      selection: this._instance.state.selection,
+      foldedRanges: this._instance.state.field(foldState, false) ?? Decoration.set([])
+    }
   }
 
   /**
@@ -482,36 +497,19 @@ export default class MarkdownEditor extends EventEmitter {
    */
   moveSection (from: number, to: number): void {
     const toc = this._instance.state.field(tocField)
-    const entry = toc.find(e => e.line === from)
+    const toLineNumber = to !== -1 ? to : this._instance.state.doc.lines
+    moveSection(toc, from, toLineNumber)(this._instance)
+  }
 
-    if (entry === undefined) {
-      return // Something went wrong
+  /**
+   * Toggles the visibility of the search panel in this editor state.
+   */
+  toggleSearchPanel () {
+    if (searchPanelOpen(this.instance.state)) {
+      closeSearchPanel(this.instance)
+    } else {
+      openSearchPanel(this.instance)
     }
-
-    // The section ends at either the next higher or same-level heading
-    const nextSections = toc.slice(toc.indexOf(entry) + 1)
-    let endOfStartPos = this._instance.state.doc.length
-
-    for (const section of nextSections) {
-      if (section.level <= entry.level) {
-        endOfStartPos = section.pos - 1
-        break
-      }
-    }
-
-    const toLine = to !== -1 ? to : this._instance.state.doc.lines
-    const targetPos = this._instance.state.doc.line(toLine).to
-    const entryContents = this._instance.state.sliceDoc(entry.pos, endOfStartPos)
-
-    // Now, dispatch the updates.
-    this._instance.dispatch({
-      changes: [
-        // First, "cut"
-        { from: entry.pos, to: endOfStartPos, insert: '' },
-        // Then, "paste"
-        { from: targetPos, insert: entryContents }
-      ]
-    })
   }
 
   /**
@@ -545,6 +543,7 @@ export default class MarkdownEditor extends EventEmitter {
   private onConfigUpdate (newOptions: Partial<EditorConfiguration>): void {
     const inputModeChanged = newOptions.inputMode !== undefined && newOptions.inputMode !== this.config.inputMode
     const darkModeChanged = newOptions.darkMode !== undefined && newOptions.darkMode !== this.config.darkMode
+    const editorModeChanged = newOptions.darkModeEditor !== undefined && newOptions.darkModeEditor !== this.config.darkModeEditor
     const themeChanged = newOptions.theme !== undefined && newOptions.theme !== this.config.theme
 
     // Third: The input mode, if applicable
@@ -559,12 +558,15 @@ export default class MarkdownEditor extends EventEmitter {
     }
 
     // Fourth: Switch theme, if applicable
-    if (darkModeChanged || themeChanged) {
+    if (darkModeChanged || editorModeChanged || themeChanged) {
       const themes = getMainEditorThemes()
+
+      const darkMode = newOptions.darkMode ?? this.config.darkMode
+      const darkModeEditor = newOptions.darkModeEditor ?? this.config.darkModeEditor
 
       this._instance.dispatch({
         effects: darkModeEffect.of({
-          darkMode: newOptions.darkMode,
+          darkMode: useDarkModeEditor(darkMode, darkModeEditor),
           ...themes[newOptions.theme ?? this.config.theme]
         })
       })
@@ -578,7 +580,7 @@ export default class MarkdownEditor extends EventEmitter {
    *
    * @return  {any}           The value of the key
    */
-  getOption (name: string): any {
+  getOption (name: string) {
     const config = this._instance.state.field(configField)
     if (name in config) {
       return config[name as keyof EditorConfiguration]
@@ -618,10 +620,23 @@ export default class MarkdownEditor extends EventEmitter {
    * @param   {string}  text  The text to replace the selection with
    */
   replaceSelection (text: string): void {
-    const mainSel = this._instance.state.selection.main
-    this._instance.dispatch({
-      changes: { from: mainSel.from, to: mainSel.to, insert: text }
-    })
+    const transaction = this._instance.state.replaceSelection(text)
+    this._instance.dispatch(transaction)
+    this._instance.focus()
+  }
+
+  /**
+   * Insert a fenced div, `::: {#id}`,
+   * or bracketed span, `[my text]{#id}`
+   * around the main selection.
+   *
+   * @param   {string}  type        The type of div to insert
+   * @param   {string}  identifier  Identifier attribute. Spaces are replaced with a hyphen `-`
+   * @param   {string}  classes     Class attributes. Words are prepended with `.`
+   * @param   {string}  attributes  Key=Value attributes.
+   */
+  insertPandocDivOrSpan (type: 'div'|'span', attributes: string): void {
+    applyPandocDivOrSpan(this._instance, type, parsePandocAttributes(attributes))
   }
 
   /**
@@ -641,7 +656,16 @@ export default class MarkdownEditor extends EventEmitter {
   }
 
   /**
-   * Sets the project info field of the editor state to the provided value.
+   * Whether any element (including the editor, but also any widgets or other
+   * elements inside the entire editor DOM element) has currently focus.
+   *
+   * @return  {boolean} The focus status
+   */
+  hasFocusWithin (): boolean {
+    return this._instance.dom.contains(document.activeElement)
+  }
+
+  /* Sets the project info field of the editor state to the provided value.
    *
    * @param   {ProjectInfo|null}  info  The data
    */
@@ -705,6 +729,7 @@ export default class MarkdownEditor extends EventEmitter {
     const mainOffset = this._instance.state.selection.main.head
     const line = this._instance.state.doc.lineAt(mainOffset)
     const ast = markdownToAST(this._instance.state.sliceDoc(), syntaxTree(this._instance.state))
+    const locale: string = window.config.get('appLang')
     return {
       words: this.wordCount ?? 0,
       chars: this.charCount ?? 0,
@@ -718,7 +743,7 @@ export default class MarkdownEditor extends EventEmitter {
           // each selection present.
           const anchorLine = this._instance.state.doc.lineAt(sel.anchor)
           const headLine = this._instance.state.doc.lineAt(sel.head)
-          const { words, chars } = countAll(ast, sel.from, sel.to)
+          const { words, chars } = countAll(ast, locale, sel.from, sel.to)
           return {
             anchor: { line: anchorLine.number, ch: sel.from - anchorLine.from + 1 },
             head: { line: headLine.number, ch: sel.to - headLine.from + 1 },

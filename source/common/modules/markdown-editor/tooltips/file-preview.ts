@@ -19,12 +19,12 @@ import { trans } from '@common/i18n-renderer'
 import { md2html } from '@common/modules/markdown-utils/markdown-to-html'
 import formatDate from '@common/util/format-date'
 import { CITEPROC_MAIN_DB } from '@dts/common/citeproc'
-import sanitizeHtml from 'sanitize-html'
 import { configField } from '../util/configuration'
 import type { FindFileAndReturnMetadataResult } from 'source/app/service-providers/commands/file-find-and-return-meta-data'
 import { pathDirname } from 'source/common/util/renderer-path-polyfill'
 import makeValidUri from 'source/common/util/make-valid-uri'
 import type { ForceOpenAPI } from 'source/app/service-providers/commands/force-open'
+import { sanitizeHTML } from 'source/common/util/sanitize-html'
 
 const ipcRenderer = window.ipc
 
@@ -32,7 +32,7 @@ const ipcRenderer = window.ipc
 async function filePreviewTooltip (view: EditorView, pos: number, side: 1 | -1): Promise<Tooltip|null> {
   const nodeAt = syntaxTree(view.state).resolve(pos, side)
 
-  if (![ 'ZknLinkContent', 'ZknLinkPipe', 'ZknLink', 'ZknLinkTitle' ].includes(nodeAt.type.name)) {
+  if (![ 'ZknLink', 'ZknLinkContent', 'ZknLinkTitle', 'ZknLinkPipe', 'ZknLinkMark',  ].includes(nodeAt.type.name)) {
     return null
   }
 
@@ -94,11 +94,14 @@ function getPreviewElement (metadata: FindFileAndReturnMetadataResult, linkConte
 
   // basePath is needed to convert any relative URLs into absolute ones
   const basePath = pathDirname(metadata.filePath)
-  const html = md2html(
+  content.textContent = trans('Generating preview…')
+
+  // Start the MD->HTML conversion ...
+  md2html(
     metadata.previewMarkdown,
-    window.getCitationCallback(CITEPROC_MAIN_DB),
-    zknLinkFormat,
     {
+      zknLinkFormat,
+      onCitation: window.getCitationCallback(CITEPROC_MAIN_DB),
       // Convert the image links to absolute (if necessary)
       onImageSrc (src) {
         const isDataUrl = /^data:[a-zA-Z0-9/;=]+(?:;base64){0,1},.+/.test(src)
@@ -110,24 +113,17 @@ function getPreviewElement (metadata: FindFileAndReturnMetadataResult, linkConte
       }
     }
   )
-
-  content.innerHTML = sanitizeHtml(html, {
-    // These options basically translate into: Allow nothing but bare metal tags
-    allowedTags: sanitizeHtml.defaults.allowedTags.concat(['img']),
-    disallowedTagsMode: 'escape',
-    allowedIframeDomains: [],
-    allowedIframeHostnames: [],
-    allowedScriptDomains: [],
-    allowedSchemes: sanitizeHtml.defaults.allowedSchemes.concat(['safe-file']),
-    allowedScriptHostnames: [],
-    allowVulnerableTags: false
-  })
+    .then(html => {
+      // ... and then apply it to the content element.
+      content.innerHTML = sanitizeHTML(html)
+    })
+    .catch(err => console.error(err))
 
   const meta = document.createElement('div')
   meta.classList.add('metadata')
   meta.innerHTML = `${trans('Word count')}: ${metadata.wordCount}`
   meta.innerHTML += '<br>'
-  meta.innerHTML += `${trans('Modified')}: ${formatDate(metadata.modtime, window.config.get('appLang'))}`
+  meta.innerHTML += `${trans('Modified')}: ${formatDate(metadata.modtime, window.config.get('appLang') as string)}`
 
   const actions = document.createElement('div')
   actions.classList.add('actions')
@@ -191,6 +187,7 @@ export const filePreview = [
       padding: '5px',
       fontSize: '80%'
     },
+    '.editor-note-preview pre': { whiteSpace: 'pre-wrap' },
     '.editor-note-preview h1': { fontSize: '100%' },
     '.editor-note-preview h2': { fontSize: '95%' },
     '.editor-note-preview h3': { fontSize: '90%' },

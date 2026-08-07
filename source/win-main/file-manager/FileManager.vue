@@ -87,13 +87,12 @@
  *
  * END HEADER
  */
-import findObject from '@common/util/find-object'
 import FileTree from './FileTree.vue'
 import FileList from './FileList.vue'
 import { trans } from '@common/i18n-renderer'
 import { nextTick, ref, computed, watch, onMounted } from 'vue'
-import { useConfigStore, useWorkspacesStore } from 'source/pinia'
-import type { AnyDescriptor } from 'source/types/common/fsal'
+import { useConfigStore } from 'source/pinia'
+import { useWorkspaceStore } from 'source/pinia/workspace-store'
 
 const ipcRenderer = window.ipc
 
@@ -112,10 +111,9 @@ const rootElement = ref<HTMLDivElement|null>(null)
 const fileTreeComponent = ref<typeof FileTree|null>(null)
 const fileListComponent = ref<typeof FileList|null>(null)
 
-const workspacesStore = useWorkspacesStore()
+const workspaceStore = useWorkspaceStore()
 const configStore = useConfigStore()
 
-const fileTree = computed<AnyDescriptor[]>(() => workspacesStore.roots.map(root => root.descriptor))
 const selectedDirectory = computed(() => configStore.config.openDirectory)
 
 const filterPlaceholder = trans('Filter…')
@@ -144,8 +142,8 @@ watch(fileManagerMode, () => {
   // Reset all properties from the resize operations.
   const fileTree = fileTreeComponent.value?.$el
   const fileList = fileListComponent.value?.$el
-  fileTree.style.removeProperty('width')
-  fileTree.style.removeProperty('left')
+  fileTree.style?.removeProperty('width')
+  fileTree.style?.removeProperty('left')
   fileList.style.removeProperty('width')
   fileList.style.removeProperty('left')
   fileTreeVisible.value = true
@@ -270,7 +268,10 @@ function handleDragOver (evt: DragEvent): void {
   let scroll = elem.scrollTop
   let distanceBottom = elem.offsetHeight - y // The less the value, the closer
   let distanceTop = (scroll > 0) ? y - elem.offsetTop : 0
-  if (elem.scrollHeight - scroll === elem.clientHeight) distanceBottom = 0
+  if (elem.scrollHeight - scroll === elem.clientHeight) {
+    distanceBottom = 0
+  }
+
   // Now scroll if applicable. The calculations take care that
   // the scrolling is faster the closer to the edge the object
   // is
@@ -284,23 +285,17 @@ function handleDragOver (evt: DragEvent): void {
 
 function handleWheel (event: WheelEvent): void {
   // Determine if we can scroll back & forth
-  if (process.platform !== 'darwin') {
-    return // macOS only
-  }
-
   if (event.deltaY !== 0) {
     return // Don't interfere with vertical scrolling
   }
 
   // Toggle back and forth depending on the current state. toggleFileList
   // will make sure to catch things such as whether we are in combined mode
-  if (event.deltaX > 0) {
+  if (event.deltaX > 0 && !isFileListVisible.value) {
     // Switch to the file list
-    if (!isFileListVisible.value) {
-      event.preventDefault()
-      event.stopPropagation()
-      toggleFileList()
-    }
+    event.preventDefault()
+    event.stopPropagation()
+    toggleFileList()
   } else if (event.deltaX < 0 && isFileListVisible.value) {
     // Switch to the tree view
     event.preventDefault()
@@ -322,9 +317,10 @@ function selectionListener (evt: MouseEvent): void {
     return
   }
 
-  const obj = findObject(fileTree.value, 'path', parseInt(target.dataset.path), 'children')
+  const descriptor = workspaceStore.descriptorMap.get(target.dataset.path)
+
   // Nothing found/type is a file? Return.
-  if (obj != null || obj.type === 'file') {
+  if (descriptor === undefined || descriptor.type !== 'directory') {
     return
   }
 
@@ -373,6 +369,9 @@ body #file-manager {
   width: 100%;
   height: 100%;
   position: relative; // Necessary so that the arrow button isn't misplaced
+  // Use tabular numbers so that people who use date-based file naming schemes
+  // can faster parse the filenames
+  font-variant-numeric: tabular-nums;
 
   #component-container {
     overflow-x: hidden;

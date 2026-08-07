@@ -1,6 +1,6 @@
 <template>
   <div v-bind:class="{ inline: inline === true, 'form-control': true }">
-    <label v-if="label" v-bind:for="fieldID" v-html="label"></label>
+    <label v-if="label" v-bind:for="fieldID">{{ label }}</label>
     <div
       v-bind:class="{
         'input-text-button-group': true,
@@ -16,7 +16,7 @@
         type="text"
         v-bind:class="{ inline: inline === true }"
         v-bind:placeholder="placeholder"
-        v-bind:autofocus="autofocus"
+        v-bind:autofocus="props.autofocus"
         v-bind:disabled="disabled"
         v-on:input="emit('update:modelValue', inputValue)"
         v-on:keyup.enter="emit('confirm', inputValue)"
@@ -33,7 +33,9 @@
         <cds-icon shape="times"></cds-icon>
       </button>
     </div>
-    <p v-if="info !== undefined" class="info" v-html="info"></p>
+    <p v-if="info !== undefined" class="info">
+      {{ info }}
+    </p>
   </div>
 </template>
 
@@ -52,7 +54,7 @@
  * END HEADER
  */
 import { trans } from '@common/i18n-renderer'
-import { computed, ref, watch, toRef } from 'vue'
+import { computed, ref, watch, toRef, onMounted } from 'vue'
 
 const props = defineProps<{
   autofocus?: boolean
@@ -81,6 +83,15 @@ const inputValue = ref<string>(props.modelValue)
 
 watch(toRef(props, 'modelValue'), () => {
   inputValue.value = props.modelValue
+})
+
+onMounted(() => {
+  if (props.autofocus) {
+    // The browser will only auto-focus the textfield natively if it is added to
+    // the DOM the first time. With this check, we ensure it always receives
+    // focus whenever it gets mounted.
+    focus()
+  }
 })
 
 const resetLabel = trans('Reset')
@@ -144,13 +155,12 @@ body div.form-control {
 
 body.darwin {
   div.form-control .input-text-button-group {
-    font-family:  -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    font-family: system-ui, sans-serif;
     font-size: 13px;
     background-color: white;
     border: 1px solid rgb(210, 210, 210);
     border-bottom-color: rgb(180, 180, 180);
     border-radius: 6px;
-    padding: 2px 4px;
     transition: 0.1s outline;
 
     &:focus-within {
@@ -174,7 +184,6 @@ body.win32 {
     border: 2px solid rgb(90, 90, 90);
     border-radius: 0px;
     min-width: 50px;
-    padding: 2px 8px;
   }
 
   &.dark {
@@ -192,7 +201,6 @@ body.linux {
     border: 1px solid #b4b4b4;
     border-radius: 4px;
     min-width: 50px;
-    padding: 2px 8px;
   }
 
   &.dark {

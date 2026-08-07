@@ -13,10 +13,11 @@
  * END HEADER
  */
 
-import sanitizeHtml from 'sanitize-html'
+import { type GetTextTranslations } from 'gettext-parser'
+
 const ipcRenderer = window.ipc
 
-let i18nData: any
+let i18nData: GetTextTranslations|undefined
 
 /**
  * Call this function during window registration to load the translation data
@@ -36,7 +37,7 @@ export async function loadData (): Promise<void> {
  * @return  {string}         The translation, or the message ID if no translations were found.
  */
 function getTranslation (msgid: string): string {
-  if (i18nData === undefined) {
+  if (i18nData === undefined || msgid === '') {
     return msgid
   }
 
@@ -62,15 +63,8 @@ export function trans (msgid: string, ...args: any[]): string {
   let transString = getTranslation(msgid)
 
   for (const a of args) {
-    transString = transString.replace('%s', a) // Always replace one %s with an arg
+    transString = transString.replace('%s', String(a)) // Always replace one %s with an arg
   }
 
-  // Finally, before returning the translation, sanitize it. As these are only
-  // translation strings, we can basically only allow a VERY small subset of all
-  // tags.
-  const safeString = sanitizeHtml(transString, {
-    allowedTags: [ 'em', 'strong', 'kbd' ]
-  })
-
-  return safeString
+  return transString
 }

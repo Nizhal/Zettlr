@@ -2,6 +2,8 @@
   <div
     ref="mainEditorWrapper"
     class="main-editor-wrapper"
+    role="region"
+    v-bind:aria-label="`Markdown Editor: Currently editing file ${pathBasename(props.file.path)}`"
     v-bind:style="{ 'font-size': `${fontSize}px` }"
     v-bind:class="{
       'code-file': !isMarkdown,
@@ -31,8 +33,7 @@
  * END HEADER
  */
 
-import MarkdownEditor from '@common/modules/markdown-editor'
-import objectToArray from '@common/util/object-to-array'
+import MarkdownEditor, { type EditorViewPersistentState } from '@common/modules/markdown-editor'
 
 import { ref, computed, onMounted, onBeforeUnmount, watch, toRef, onUpdated } from 'vue'
 import { type EditorCommands } from './App.vue'
@@ -40,15 +41,18 @@ import { hasMarkdownExt } from '@common/util/file-extention-checks'
 import { DP_EVENTS, type OpenDocument } from '@dts/common/documents'
 import { CITEPROC_MAIN_DB } from '@dts/common/citeproc'
 import { type EditorConfigOptions } from '@common/modules/markdown-editor/util/configuration'
-import type { AnyDescriptor, CodeFileDescriptor, MDFileDescriptor } from '@dts/common/fsal'
+import type { CodeFileDescriptor, DirDescriptor, MDFileDescriptor } from '@dts/common/fsal'
 import { getBibliographyForDescriptor as getBibliography } from '@common/util/get-bibliography-for-descriptor'
 import { EditorSelection } from '@codemirror/state'
 import { documentAuthorityIPCAPI } from '@common/modules/markdown-editor/util/ipc-api'
-import { useConfigStore, useDocumentTreeStore, useTagsStore, useWindowStateStore, useWorkspacesStore } from 'source/pinia'
+import { useConfigStore, useDocumentTreeStore, useTagsStore, useWindowStateStore, useWorkspaceStore } from 'source/pinia'
 import { isAbsolutePath, pathBasename, pathDirname, resolvePath } from '@common/util/renderer-path-polyfill'
 import type { DocumentManagerIPCAPI, DocumentsUpdateContext } from 'source/app/service-providers/documents'
 import type { CiteprocProviderIPCAPI } from 'source/app/service-providers/citeproc'
 import type { ProjectInfo } from 'source/common/modules/markdown-editor/plugins/project-info-field'
+import type { FileContentSearchResult } from 'source/app/service-providers/search'
+import type { CustomEditorShortcut } from 'source/common/modules/markdown-editor/keymaps/shortcuts'
+import getDocumentTitle from './util/get-document-title'
 
 const ipcRenderer = window.ipc
 
@@ -73,19 +77,19 @@ const props = defineProps<{
   editorCommands: EditorCommands
   distractionFree: boolean
   file: OpenDocument
+  persistentStateMap: Map<string, EditorViewPersistentState>
 }>()
 
 const emit = defineEmits<(e: 'globalSearch', query: string) => void>()
 
 const windowStateStore = useWindowStateStore()
 const documentTreeStore = useDocumentTreeStore()
-const workspacesStore = useWorkspacesStore()
+const workspaceStore = useWorkspaceStore()
 const configStore = useConfigStore()
 const tagStore = useTagsStore()
 
 // UNREFFED STUFF
 let currentEditor: MarkdownEditor|null = null
-const isMarkdown = hasMarkdownExt(props.file.path)
 
 // EVENT LISTENERS
 ipcRenderer.on('citeproc-database-updated', (_event, _dbPath: string) => {
@@ -102,7 +106,7 @@ ipcRenderer.on('citeproc-database-updated', (_event, _dbPath: string) => {
 })
 
 ipcRenderer.on('shortcut', (event, command) => {
-  if (currentEditor?.hasFocus() !== true) {
+  if (currentEditor?.hasFocusWithin() !== true) {
     return // None of our business
   }
 
@@ -119,7 +123,7 @@ ipcRenderer.on('shortcut', (event, command) => {
       })
       .catch(e => console.error(e))
   } else if (command === 'search') {
-    showSearch.value = !showSearch.value
+    currentEditor.toggleSearchPanel()
   } else if (command === 'toggle-typewriter-mode') {
     currentEditor.hasTypewriterMode = !currentEditor.hasTypewriterMode
   } else if (command === 'copy-as-html') {
@@ -139,7 +143,7 @@ ipcRenderer.on('documents-update', (e, payload: { event: DP_EVENTS, context: Doc
   } else if (event === DP_EVENTS.FILE_SAVED && context.filePath === props.file.path) {
     // The file has been saved to disk. This means we should probably update the
     // descriptor to know of, e.g., library changes.
-    ipcRenderer.invoke('application', { command: 'get-descriptor', payload: props.file.path })
+    ipcRenderer.invoke('fsal', { command: 'get-descriptor', payload: props.file.path })
       .then((descriptor: MDFileDescriptor|CodeFileDescriptor|undefined) => {
         if (descriptor === undefined) {
           throw new Error(`Could not swap document: Could not retrieve descriptor for path ${props.file.path}!`)
@@ -179,7 +183,12 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  currentEditor?.unmount()
+  if (currentEditor !== null) {
+    props.persistentStateMap.set(props.file.path, currentEditor.persistentState)
+    // Clear out the table of contents before unmounting the component.
+    windowStateStore.tableOfContents = undefined
+    currentEditor.unmount()
+  }
 })
 
 onUpdated(() => {
@@ -187,13 +196,17 @@ onUpdated(() => {
   // data for this component update, which includes visibility with the v-show
   // directive. In case that the editor component is mounted and non-hidden, we
   // will fire
-  const elem = mainEditorWrapper.value
-  if (elem === null || currentEditor === null) {
+  if (currentEditor === null) {
     return
   }
 
-  if (elem.style.display === 'none') {
-    return // Editor is hidden by v-show directive
+  const currentFilePath = currentEditor.documentPath
+  if (currentFilePath !== props.activeFile?.path) {
+    // File path has changed -> unmount and remount (duplicate code from
+    // onMounted and onBeforeUnmount hooks).
+    props.persistentStateMap.set(currentFilePath, currentEditor.persistentState)
+    currentEditor.unmount()
+    loadDocument().catch(err => console.error(err))
   }
 
   if (!currentEditor.hasFocus()) {
@@ -202,17 +215,16 @@ onUpdated(() => {
 })
 
 // DATA SETUP
-const showSearch = ref(false)
 const mainEditorWrapper = ref<HTMLDivElement|null>(null)
 
 // COMPUTED PROPERTIES
 const useH1 = computed<boolean>(() => configStore.config.fileNameDisplay.includes('heading'))
 const useTitle = computed<boolean>(() => configStore.config.fileNameDisplay.includes('title'))
-const filenameOnly = computed<boolean>(() => configStore.config.zkn.linkFilenameOnly)
 const fontSize = computed<number>(() => configStore.config.editor.fontSize)
 const globalSearchResults = computed(() => windowStateStore.searchResults)
 const snippets = computed(() => windowStateStore.snippets)
 const tags = computed(() => tagStore.tags)
+const isMarkdown = computed(() => hasMarkdownExt(props.file.path))
 
 const activeFileDescriptor = ref<undefined|MDFileDescriptor|CodeFileDescriptor>(undefined)
 
@@ -221,10 +233,11 @@ const editorConfiguration = computed<EditorConfigOptions>(() => {
   // right after setting the new configurations. Plus, the user won't update
   // everything all the time, but rather do one initial configuration, so
   // even if we incur a performance penalty, it won't be noticed that much.
-  const { editor, display, zkn, darkMode } = configStore.config
+  const { editor, display, zkn, darkMode, shortcuts, darkModeEditor } = configStore.config
   return {
     indentUnit: editor.indentUnit,
     indentWithTabs: editor.indentWithTabs,
+    alwaysIndentLineOnTab: editor.alwaysIndentLineOnTab,
     autoCloseBrackets: editor.autoCloseBrackets,
     autocorrect: {
       active: editor.autoCorrect.active,
@@ -236,16 +249,22 @@ const editorConfiguration = computed<EditorConfigOptions>(() => {
       replacements: editor.autoCorrect.replacements
     },
     autocompleteSuggestEmojis: editor.autocompleteSuggestEmojis,
+    snippetAutocompleteTriggerCharacter: editor.snippetAutocompleteTriggerCharacter,
+    autocompleteWithEnter: editor.autocompleteWithEnter,
+    autocompleteWithTab: editor.autocompleteWithTab,
     imagePreviewWidth: display.imageWidth,
     imagePreviewHeight: display.imageHeight,
     boldFormatting: editor.boldFormatting,
     italicFormatting: editor.italicFormatting,
+    highlightFormatting: editor.highlightFormatting,
     muteLines: configStore.config.muteLines,
     citeStyle: editor.citeStyle,
     readabilityAlgorithm: editor.readabilityAlgorithm,
     idRE: zkn.idRE,
     idGen: zkn.idGen,
+    previewModeShowSyntaxWhenCursorIsAdjacent: display.previewModeShowSyntaxWhenCursorIsAdjacent,
     renderCitations: display.renderCitations,
+    renderingMode: display.renderingMode,
     renderIframes: display.renderIframes,
     renderImages: display.renderImages,
     renderLinks: display.renderLinks,
@@ -254,9 +273,11 @@ const editorConfiguration = computed<EditorConfigOptions>(() => {
     renderHeadings: display.renderHTags,
     renderTables: editor.enableTableHelper,
     renderEmphasis: display.renderEmphasis,
-    linkPreference: zkn.linkWithFilename,
+    renderPandoc: display.renderPandoc,
+    renderHorizontalRules: display.renderHorizontalRules,
     zknLinkFormat: zkn.linkFormat,
-    linkFilenameOnly: zkn.linkFilenameOnly,
+    zknAddFileTitle: zkn.linkAddFileTitle,
+    linkWithIDIfPossible: zkn.linkWithIDIfPossible,
     inputMode: editor.inputMode,
     lintMarkdown: editor.lint.markdown,
     // The editor only needs to know if it should use languageTool
@@ -265,9 +286,14 @@ const editorConfiguration = computed<EditorConfigOptions>(() => {
     showStatusbar: editor.showStatusbar,
     showFormattingToolbar: editor.showFormattingToolbar,
     darkMode,
+    darkModeEditor,
     theme: display.theme,
     highlightWhitespace: editor.showWhitespace,
-    countChars: editor.countChars
+    showMarkdownLineNumbers: editor.showMarkdownLineNumbers,
+    countChars: editor.countChars,
+    shortcuts: Object.entries(shortcuts.editor)
+      .map(([ name, shortcut ]) => ({ name, shortcut }))
+      .filter((shortcut): shortcut is CustomEditorShortcut => shortcut.shortcut !== undefined)
   } satisfies EditorConfigOptions
 })
 
@@ -275,9 +301,10 @@ const editorConfiguration = computed<EditorConfigOptions>(() => {
 function updateProjectInfo (): ProjectInfo|null {
   // If this file is part of a project, the project must be defined in any
   // containing folder -> traverse up the file tree until we have found one.
-  let dir = workspacesStore.getDir(pathDirname(props.file.path))
+  let dir = workspaceStore.descriptorMap.get(pathDirname(props.file.path)) as DirDescriptor|undefined
+
   while (dir !== undefined && dir.settings.project === null) {
-    dir = workspacesStore.getDir(dir.dir)
+    dir = workspaceStore.descriptorMap.get(dir.dir) as DirDescriptor|undefined
   }
 
   if (dir === undefined || dir.settings.project === null) {
@@ -292,7 +319,7 @@ function updateProjectInfo (): ProjectInfo|null {
 
   const extractedMetadata = absPaths
     .map(p => {
-      return workspacesStore.getFile(p)
+      return workspaceStore.descriptorMap.get(p)
     })
     .filter (d => d !== undefined && d.type === 'file')
     .map(d => {
@@ -319,7 +346,7 @@ function updateProjectInfo (): ProjectInfo|null {
 }
 
 // Update the project info as soon as anything in the workspaces has changed.
-workspacesStore.$subscribe(_mutation => {
+workspaceStore.$subscribe(() => {
   if (currentEditor !== null) {
     currentEditor.projectInfo = updateProjectInfo()
   }
@@ -344,14 +371,6 @@ watch(toRef(props.editorCommands, 'moveSection'), () => {
   if (typeof from === 'number' && typeof to === 'number') {
     currentEditor?.moveSection(from, to)
   }
-})
-
-watch(toRef(props.editorCommands, 'readabilityMode'), () => {
-  if (currentEditor === null || props.activeFile?.path !== props.file.path) {
-    return
-  }
-
-  currentEditor.readabilityMode = !currentEditor.readabilityMode
 })
 
 watch(toRef(props, 'distractionFree'), () => {
@@ -391,29 +410,31 @@ watch(toRef(props.editorCommands, 'replaceSelection'), () => {
   currentEditor?.replaceSelection(textToInsert)
 })
 
-const fsalFiles = computed<MDFileDescriptor[]>(() => {
-  const tree = workspacesStore.rootDescriptors
-  const files = []
-
-  for (const item of tree) {
-    if (item.type === 'directory') {
-      const contents = objectToArray<AnyDescriptor>(item, 'children')
-        .filter((descriptor): descriptor is MDFileDescriptor => {
-          return descriptor.type === 'file'
-        })
-      files.push(...contents)
-    } else if (item.type === 'file') {
-      files.push(item)
-    }
+watch(toRef(props.editorCommands, 'insertPandoc'), () => {
+  if (props.activeFile?.path !== props.file.path || currentEditor === null) {
+    return
   }
 
-  return files
+  if (documentTreeStore.lastLeafId !== props.leafId) {
+    // This editor, even though it may be focused, was not the last focused
+    // See https://github.com/Zettlr/Zettlr/issues/4361
+    return
+  }
+
+  const { type, attributes } = props.editorCommands.data
+  if ((type === 'div' || type === 'span') && typeof attributes === 'string') {
+    currentEditor?.insertPandocDivOrSpan(type as 'div'|'span', attributes)
+    currentEditor?.focus()
+  }
+})
+
+const fsalFiles = computed<MDFileDescriptor[]>(() => {
+  return [...workspaceStore.descriptorMap.values()].filter(d => d.type === 'file')
 })
 
 // WATCHERS
 watch(useH1, () => { updateFileDatabase().catch(err => console.error('Could not update file database', err)) })
 watch(useTitle, () => { updateFileDatabase().catch(err => console.error('Could not update file database', err)) })
-watch(filenameOnly, () => { updateFileDatabase().catch(err => console.error('Could not update file database', err)) })
 watch(fsalFiles, () => { updateFileDatabase().catch(err => console.error('Could not update file database', err)) })
 
 watch(editorConfiguration, (newValue) => {
@@ -442,16 +463,24 @@ watch(tags, (newValue) => {
  * @return  {MarkdownEditor}       The requested editor
  */
 async function getEditorFor (doc: string): Promise<MarkdownEditor> {
-  const editor = new MarkdownEditor(props.leafId, props.windowId, doc, documentAuthorityIPCAPI)
+  const persistentState = props.persistentStateMap.get(doc)
+  const editor = new MarkdownEditor(props.leafId, props.windowId, doc, documentAuthorityIPCAPI, undefined, persistentState)
 
   // Update the document info on corresponding events
+  editor.on('loaded', () => {
+    if (currentEditor === editor) {
+      windowStateStore.activeDocumentInfo = currentEditor.documentInfo
+      windowStateStore.tableOfContents = currentEditor.tableOfContents
+    }
+  })
+
   editor.on('change', () => {
     if (currentEditor === editor) {
       windowStateStore.tableOfContents = currentEditor.tableOfContents
     }
   })
 
-  editor.on('cursorActivity', () => {
+  editor.on('docUpdate', () => {
     if (currentEditor === editor) {
       windowStateStore.activeDocumentInfo = currentEditor.documentInfo
     }
@@ -506,23 +535,15 @@ async function getEditorFor (doc: string): Promise<MarkdownEditor> {
 async function loadDocument (): Promise<void> {
   const newEditor = await getEditorFor(props.file.path)
 
-  const wrapper = document.getElementById(`cm-text-${props.leafId}`)
-  if (wrapper === null) {
-    throw new Error('Could not mount editor: Wrapper element not found!')
-  }
-
-  wrapper.replaceWith(newEditor.dom)
+  mainEditorWrapper.value?.appendChild(newEditor.dom)
   currentEditor = newEditor
-
-  windowStateStore.tableOfContents = currentEditor.tableOfContents
-  windowStateStore.activeDocumentInfo = currentEditor.documentInfo
 
   currentEditor.setCompletionDatabase('tags', tags.value)
   currentEditor.setCompletionDatabase('snippets', snippets.value)
 
   maybeHighlightSearchResults()
 
-  const descriptor: MDFileDescriptor|CodeFileDescriptor|undefined = await ipcRenderer.invoke('application', { command: 'get-descriptor', payload: props.file.path })
+  const descriptor: MDFileDescriptor|CodeFileDescriptor|undefined = await ipcRenderer.invoke('fsal', { command: 'get-descriptor', payload: props.file.path })
   if (descriptor === undefined) {
     throw new Error(`Could not swap document: Could not retrieve descriptor for path ${props.file.path}!`)
   }
@@ -533,6 +554,8 @@ async function loadDocument (): Promise<void> {
   if (library !== undefined) {
     updateCitationKeys(library).catch(e => console.error('Could not update citation keys', e))
   }
+
+  updateFileDatabase().catch(err => console.error('Could not update file database', err))
 
   // Provide the editor instance with metadata for the new file
   currentEditor.setOptions({
@@ -554,16 +577,16 @@ async function updateCitationKeys (library: string): Promise<void> {
     command: 'get-items',
     payload: { database: library }
   } as CiteprocProviderIPCAPI))
-    .map((item: any) => {
+    .map((item: CSLItem) => {
       // Get a rudimentary author list. Precedence are authors, then editors.
       // Fallback: Container title.
       let authors = ''
-      const authorSrc = item.author !== undefined
+      const authorSrc = item.author !== undefined && Array.isArray(item.author)
         ? item.author
-        : item.editor !== undefined ? item.editor : []
+        : item.editor !== undefined && Array.isArray(item.editor) ? item.editor : []
 
       if (authorSrc.length > 0) {
-        authors = authorSrc.map((author: any) => {
+        authors = authorSrc.map(author => {
           if (author.family !== undefined) {
             return author.family
           } else if (author.literal !== undefined) {
@@ -571,21 +594,21 @@ async function updateCitationKeys (library: string): Promise<void> {
           } else {
             return undefined
           }
-        }).filter((elem: any) => elem !== undefined).join(', ')
-      } else if (item['container-title'] !== undefined) {
+        }).filter(elem => elem !== undefined).join(', ')
+      } else if (item['container-title'] !== undefined && typeof item['container-title'] === 'string') {
         authors = item['container-title']
       }
 
       let title = ''
-      if (item.title !== undefined) {
+      if (item.title !== undefined && typeof item.title === 'string') {
         title = item.title
-      } else if (item['container-title'] !== undefined) {
+      } else if (item['container-title'] !== undefined && typeof item['container-title'] === 'string') {
         title = item['container-title']
       }
 
       let date = ''
-      if (item.issued !== undefined) {
-        if ('date-parts' in item.issued) {
+      if (item.issued != undefined && typeof item.issued === 'object') {
+        if ('date-parts' in item.issued && Array.isArray(item.issued['date-parts'])) {
           const year = item.issued['date-parts'][0][0]
           date = ` (${year})`
         } else if ('literal' in item.issued) {
@@ -613,15 +636,9 @@ async function updateFileDatabase (): Promise<void> {
 
   // First, add all existing files to the database ...
   for (const file of fsalFiles.value) {
-    let displayName = pathBasename(file.name, file.ext)
-    if (useTitle.value && file.yamlTitle !== undefined) {
-      displayName = file.yamlTitle
-    } else if (useH1.value && file.firstHeading !== null) {
-      displayName = file.firstHeading
-    }
     fileDatabase.push({
       filename: pathBasename(file.name, file.ext),
-      displayName,
+      displayName: getDocumentTitle(file),
       id: file.id
     })
   }
@@ -652,7 +669,7 @@ function maybeHighlightSearchResults (): void {
   // Construct CodeMirror.Ranges from the results
   const rangesToHighlight = []
   // NOTE: We have to filter out "whole-file" results
-  for (const res of result.result.filter(res => res.line > -1)) {
+  for (const res of result.result.filter((res): res is FileContentSearchResult => res.type === 'content' && res.line > -1)) {
     const startIdx = currentEditor.instance.state.doc.line(res.line + 1).from
     for (const range of res.ranges) {
       const { from, to } = range
@@ -686,54 +703,7 @@ function maybeHighlightSearchResults (): void {
 
   .cm-editor {
     .cm-scroller { padding: 50px 50px; }
-
-    .code { // BEGIN: CODE BLOCK/FILE THEME
-      // We're using this solarized theme here: https://ethanschoonover.com/solarized/
-      // See also the CodeEditor.vue component, which uses the same colours
-      @base03:    #002b36;
-      @base02:    #073642;
-      @base01:    #586e75;
-      @base00:    #657b83;
-      @base0:     #839496;
-      @base1:     #93a1a1;
-      @base2:     #eee8d5;
-      @base3:     #fdf6e3;
-      @yellow:    #b58900;
-      @orange:    #cb4b16;
-      @red:       #dc322f;
-      @magenta:   #d33682;
-      @violet:    #6c71c4;
-      @blue:      #268bd2;
-      @cyan:      #2aa198;
-      @green:     #859900;
-
-      color: @base01;
-      font-family: Inconsolata, monospace;
-
-      .cm-string         { color: @green; }
-      .cm-keyword        { color: @green; }
-      .cm-atom           { color: @violet; }
-      .cm-tag-name,
-      .cm-modifier       { color: @cyan; }
-      .cm-qualifier      { color: @blue; }
-      .cm-builtin        { color: @blue; }
-      .cm-variable-name  { color: @cyan; }
-      .cm-variable       { color: @cyan; }
-      .cm-comment        { color: @base1; }
-      .cm-attribute-name { color: @orange; }
-      .cm-property       { color: @magenta; }
-      .cm-keyword,
-      .cm-name,
-      .cm-type-name      { color: @yellow; }
-      .cm-number         { color: @violet; }
-      .cm-property-name  { color: @blue; }
-      .cm-deleted        { color: @orange; }
-      .cm-changed        { color: @yellow; }
-      .cm-inserted       { color: @green; }
-      .cm-positive       { color: @green; }
-      .cm-negative       { color: @red; }
-      .cm-meta           { color: @violet; }
-    } // END: Solarized code theme
+    .cm-content { min-width: 0; }
   }
 
   // If a code file is loaded, we need to display the editor contents in monospace.
@@ -743,21 +713,10 @@ function maybeHighlightSearchResults (): void {
     // Reset the margins for code files
     .cm-scroller { padding: 0px; }
   }
-
-  .cm-content {
-    overflow-x: hidden !important; // Necessary to hide the horizontal scrollbar
-  }
 }
 
 body.dark .main-editor-wrapper {
-  background-color: rgba(20, 20, 30, 1);
-  .CodeMirror .CodeMirror-gutters { background-color: rgba(20, 20, 30, 1); }
-
-  //Ellipsis (...) When a header is folded
-  .cm-foldPlaceholder{
-      background-color: rgb(20, 20, 30);
-      border-style: none;
-    }
+  background-color: #2b2b2c;
 }
 
 // CodeMirror fullscreen

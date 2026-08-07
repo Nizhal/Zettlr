@@ -14,36 +14,29 @@
 
 import { type InlineParser } from '@lezer/markdown'
 
-// Any character allowed before a tag (the first are space and nbsp)
-const allowedCharsBefore = '  \t\n({['.split('')
-const tagRE = /^##?[^\s,.:;…!?"'`»«“”‘’—–@$%&*#^+~÷\\/|<=>[\](){}]+#?/u
+// Any character allowed before a tag
+const allowedCharsBefore = /^[ \t\n\(\{\[]$/
+
+// Tags start with one or two '#' followed by letters, numbers, emojis,
+// underscores, or hyphens
+const tagRE = /^##?[\p{L}\p{N}\p{Emoji}\uFE0F_-]+#?/u
 
 export const zknTagParser: InlineParser = {
   name: 'zkn-tags',
   parse: (ctx, next, pos) => {
-    if (next !== 35) { // #
+    if (next !== 35) { // 35 === '#'
       return -1
     }
 
     // Check the character before
-    if (pos > ctx.offset && !allowedCharsBefore.includes(ctx.slice(pos - 1, pos))) {
+    if (pos > ctx.offset && !allowedCharsBefore.test(ctx.slice(pos - 1, pos))) {
       return -1
     }
 
-    const currentOffset = pos - ctx.offset
-    const restOfLine = ctx.text.slice(currentOffset)
+    const match = tagRE.exec(ctx.text.slice(pos - ctx.offset))
+    if (match === null) { return -1 }
 
-    const match = tagRE.exec(restOfLine)
-    if (match === null) {
-      return -1
-    }
-
-    const end = pos + match[0].length
-    // NOTE: Apparently syntax themes only style leaf nodes, not containers, so
-    // we'll wrap the whole tag into a single ZknTagContent.
-    // const markElem = ctx.elt('CodeMark', pos, pos + 1)
-    const content = ctx.elt('ZknTagContent', pos, end)
-    const tag = ctx.elt('ZknTag', pos, end, [content])
-    return ctx.addElement(tag)
+    const tagMark = ctx.elt('ZknTagMark', pos, pos + 1)
+    return ctx.addElement(ctx.elt('ZknTag', pos, pos + match[0].length, [tagMark]))
   }
 }

@@ -1,5 +1,5 @@
 <template>
-  <div role="tabpanel">
+  <div id="references-panel" role="tabpanel">
     <!-- References -->
     <h1>
       {{ referencesLabel }}
@@ -7,14 +7,13 @@
         {{ wordCountLabel }}
       </small>
     </h1>
-    <!-- Will contain the actual HTML -->
-    <div v-html="referenceHTML"></div>
+    <!-- eslint-disable-next-line vue/no-v-html NOTE: We can only disable this rule here since the referenceHTML will pass everything through DOMPurify -->
+    <div id="references-list" v-html="referenceHTML"></div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { trans } from '@common/i18n-renderer'
-import extractCitations from '@common/util/extract-citations'
 import { getBibliographyForDescriptor as getBibliography } from '@common/util/get-bibliography-for-descriptor'
 import { isAbsolutePath, resolvePath } from '@common/util/renderer-path-polyfill'
 import { CITEPROC_MAIN_DB } from '@dts/common/citeproc'
@@ -25,7 +24,8 @@ import { type DocumentsUpdateContext } from 'source/app/service-providers/docume
 import { useDocumentTreeStore } from 'source/pinia'
 import type { CiteprocProviderIPCAPI } from 'source/app/service-providers/citeproc'
 import localiseNumber from 'source/common/util/localise-number'
-import { extractASTNodes, markdownToAST } from 'source/common/modules/markdown-utils'
+import { hasMarkdownExt } from 'source/common/util/file-extention-checks'
+import { sanitizeHTML } from 'source/common/util/sanitize-html'
 
 const ipcRenderer = window.ipc
 const documentTreeStore = useDocumentTreeStore()
@@ -44,7 +44,7 @@ function getBibliographyForDescriptor (descriptor: MDFileDescriptor): string {
   }
 }
 
-const bibliography = ref<[{ bibstart: string, bibend: string }, string[]]|undefined>(undefined)
+const bibliography = ref<[BibliographyOptions, string[]]|undefined>(undefined)
 
 const referencesLabel = trans('References')
 const activeFile = computed(() => documentTreeStore.lastLeafActiveFile)
@@ -56,14 +56,16 @@ const activeFile = computed(() => documentTreeStore.lastLeafActiveFile)
  */
 const referenceHTML = computed(() => {
   if (bibliography.value === undefined || bibliography.value[1].length === 0) {
-    return `<p>${trans('There are no citations in this document.')}</p>`
+    return sanitizeHTML(`<p>${trans('There are no citations in this document.')}</p>`)
   }
 
-  return [
+  const bibHTML = [
     bibliography.value[0].bibstart,
     ...bibliography.value[1],
     bibliography.value[0].bibend
   ].join('\n')
+
+  return sanitizeHTML(bibHTML)
 })
 
 // Provides an approximate word count. This can be used to, e.g., gauge how many
@@ -87,7 +89,7 @@ onMounted(() => {
   ipcRenderer.on('documents-update', (e, payload: { event: DP_EVENTS, context: DocumentsUpdateContext }) => {
     const { event, context } = payload
     // Update the bibliography if the active file has been saved
-    if (event === DP_EVENTS.CHANGE_FILE_STATUS && context.status === 'modification') {
+    if (event === DP_EVENTS.FILE_SAVED) {
       const { filePath } = context
 
       if (filePath === activeFile.value?.path) {
@@ -110,7 +112,11 @@ async function updateBibliography (): Promise<void> {
     return
   }
 
-  const descriptor: AnyDescriptor|undefined = await ipcRenderer.invoke('application', {
+  if (!hasMarkdownExt(activeFile.value.path)) {
+    return
+  }
+
+  const descriptor: AnyDescriptor|undefined = await ipcRenderer.invoke('fsal', {
     command: 'get-descriptor',
     payload: activeFile.value.path
   })
@@ -120,20 +126,7 @@ async function updateBibliography (): Promise<void> {
     return
   }
 
-  const fileContents: string = await ipcRenderer.invoke('application', {
-    command: 'get-file-contents',
-    payload: activeFile.value.path
-  })
-
-  // To retrieve the citations as efficiently as possible while remaining
-  // precise, we have some compact code here. It parses the file contents and
-  // only extracts what the (more accurate) Markdown parser sees as a citation,
-  // use extractCitations to parse those nodes, and only retain all the IDs/
-  // citekeys that we find in there. Also, we make sure to always flatten the
-  // resulting 2d-arrays.
-  const keys = extractASTNodes(markdownToAST(fileContents), 'Citation')
-    .flatMap(n => extractCitations(fileContents.slice(n.from, n.to)))
-    .flatMap(c => c.citations.map(cit => cit.id))
+  const keys = descriptor.citekeys
 
   // Now also include potential nocite citations (see https://pandoc.org/MANUAL.html#including-uncited-items-in-the-bibliography)
   if (descriptor.frontmatter != null && 'nocite' in descriptor.frontmatter) {
@@ -160,10 +153,31 @@ async function updateBibliography (): Promise<void> {
 }
 </script>
 
-<style lang="css" scoped>
-small.word-count {
-  font-size: 70%;
-  font-style: italic;
-  float: right;
+<style lang="css">
+div#references-panel h1 {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: space-between;
+
+  small.word-count {
+    font-size: 70%;
+    font-style: italic;
+    text-align: right;
+  }
+}
+
+div#references-list div.csl-bib-body {
+  div.csl-entry {
+    display: list-item;
+    list-style-type: square;
+    margin: 1em 0.2em 1em 1.8em;
+    font-size: 80%;
+    user-select: text;
+    cursor: text;
+
+    a { color: var(--blue-0); }
+  }
+  
 }
 </style>

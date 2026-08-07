@@ -12,7 +12,6 @@
  * END HEADER
  */
 
-import sanitizeHtml from 'sanitize-html'
 import { po, type GetTextTranslations } from 'gettext-parser'
 import getLanguageFile from './util/get-language-file'
 import { promises as fs } from 'fs'
@@ -21,6 +20,7 @@ import { type Candidate } from './util/find-lang-candidates'
 import { type LangFileMetadata } from './util/enum-lang-files'
 
 let i18nData: GetTextTranslations|undefined
+let handlerAttached = false
 
 /**
  * Call this function during boot to load the translation data immediately after
@@ -33,7 +33,10 @@ export async function loadData (lang: string): Promise<Candidate & LangFileMetad
   i18nData = po.parse(contents)
 
   // Also make the data available to renderers who request the i18n data
-  ipcMain.handle('i18n', (event) => { return i18nData })
+  if (!handlerAttached) {
+    ipcMain.handle('i18n', (event) => { return i18nData })
+    handlerAttached = true
+  }
 
   // We need to return the actually loaded file so that the config provider
   // knows what the app is showing.
@@ -49,7 +52,7 @@ export async function loadData (lang: string): Promise<Candidate & LangFileMetad
  * @return  {string}         The translation, or the message ID if no translations were found.
  */
 function getTranslation (msgid: string): string {
-  if (i18nData === undefined) {
+  if (i18nData === undefined || msgid === '') {
     return msgid
   }
 
@@ -65,25 +68,18 @@ function getTranslation (msgid: string): string {
 /**
  * Translates the given message ID
  *
- * @param   {string}  msgid  The message ID to translate
- * @param   {any[]}   args   Provide optional arguments to replace in the
- *                           translation. One argument replaces one %s, in order.
+ * @param   {string}     msgid  The message ID to translate
+ * @param   {unknown[]}  args   Provide optional arguments to replace in the
+ *                              translation. One argument replaces one %s, in order.
  *
- * @return  {string}         The translated and replaced string.
+ * @return  {string}            The translated and replaced string.
  */
-export function trans (msgid: string, ...args: any[]): string {
+export function trans (msgid: string, ...args: unknown[]): string {
   let transString = getTranslation(msgid)
 
   for (const a of args) {
-    transString = transString.replace('%s', a) // Always replace one %s with an arg
+    transString = transString.replace('%s', String(a)) // Always replace one %s with an arg
   }
 
-  // Finally, before returning the translation, sanitize it. As these are only
-  // translation strings, we can basically only allow a VERY small subset of all
-  // tags.
-  const safeString = sanitizeHtml(transString, {
-    allowedTags: [ 'em', 'strong', 'kbd' ]
-  })
-
-  return safeString
+  return transString
 }

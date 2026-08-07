@@ -12,10 +12,11 @@
  * END HEADER
  */
 
+import type { AppServiceContainer } from 'source/app/app-service-container'
 import ZettlrCommand from './zettlr-command'
 
 export default class IncreasePomodoro extends ZettlrCommand {
-  constructor (app: any) {
+  constructor (app: AppServiceContainer) {
     super(app, 'add-pomodoro')
   }
 
@@ -24,7 +25,7 @@ export default class IncreasePomodoro extends ZettlrCommand {
     * @param {String} evt The event name
     * @param  {Object} arg Empty
     */
-  async run (event: string, _arg: any): Promise<void> {
+  async run (event: string, _arg: void): Promise<void> {
     this._app.stats.increasePomodoros()
   }
 }

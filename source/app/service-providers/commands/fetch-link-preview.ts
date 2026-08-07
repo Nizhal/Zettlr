@@ -17,11 +17,12 @@ import ZettlrCommand from './zettlr-command'
 import path from 'path'
 import extractYamlFrontmatter from '@common/util/extract-yaml-frontmatter'
 import { nativeImage } from 'electron'
+import type { AppServiceContainer } from 'source/app/app-service-container'
 
 const MAX_FILE_PREVIEW_LENGTH = 300
 
 export default class FetchLinkPreview extends ZettlrCommand {
-  constructor (app: any) {
+  constructor (app: AppServiceContainer) {
     super(app, 'fetch-link-preview')
   }
 
@@ -111,15 +112,17 @@ export default class FetchLinkPreview extends ZettlrCommand {
         } // Else: Unsupported file, leave it at the title
 
         return returnValue
-      } catch (err: any) {
+      } catch (err: unknown) {
         return undefined
       }
     }
 
     try {
       return await fetchLinkPreview(arg)
-    } catch (err: any) {
-      this._app.log.verbose(`[Application] Could not fetch link preview for URL ${String(arg)}: ${String(err.message)}`)
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        this._app.log.verbose(`[Application] Could not fetch link preview for URL ${arg}: ${err.message}`)
+      }
       return undefined // Silently swallow errors
     }
   }

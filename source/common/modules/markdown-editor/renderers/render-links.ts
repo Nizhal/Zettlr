@@ -16,10 +16,12 @@ import { type EditorView, type DecorationSet, ViewPlugin, type ViewUpdate, Decor
 import type { RangeSet, Range } from '@codemirror/state'
 import { syntaxTree } from '@codemirror/language'
 import { rangeInSelection } from '../util/range-in-selection'
+import { configField } from '../util/configuration'
 
 function hideLinkMarkers (view: EditorView): RangeSet<Decoration> {
   const ranges: Array<Range<Decoration>> = []
   const hiddenDeco = Decoration.replace({})
+  const includeAdjacent = view.state.field(configField, false)?.previewModeShowSyntaxWhenCursorIsAdjacent ?? true
 
   for (const { from, to } of view.visibleRanges) {
     syntaxTree(view.state).iterate({
@@ -31,7 +33,7 @@ function hideLinkMarkers (view: EditorView): RangeSet<Decoration> {
         }
 
         // Do not hide any characters if a selection is inside here
-        if (rangeInSelection(view.state, node.from, node.to)) {
+        if (rangeInSelection(view.state.selection, node.from, node.to, includeAdjacent)) {
           return false
         }
 
@@ -48,10 +50,13 @@ function hideLinkMarkers (view: EditorView): RangeSet<Decoration> {
         } else {
           // It's a regular Markdown Link
           const marks = node.node.getChildren('LinkMark')
+          const label = node.node.getChild('LinkLabel')
 
-          // We need at least three LinkMarks: [, ], and ( since the parser will
-          // also parse ellipses as Links (a.k.a. reference style links)
-          if (marks.length < 3) {
+          // We need at least three LinkMarks for regular links: [, ], and (
+          // since the parser will also parse ellipses as Links (a.k.a.
+          // reference style links). Alternatively, it needs to have a LinkLabel
+          // child node
+          if (marks.length < 3 && !label ) {
             return false
           }
 
@@ -61,7 +66,7 @@ function hideLinkMarkers (view: EditorView): RangeSet<Decoration> {
 
           ranges.push(
             hiddenDeco.range(marks[0].from, marks[0].to),
-            hiddenDeco.range(marks[1].from, marks[marks.length - 1].to)
+            hiddenDeco.range(marks[1].from, label ? label.to : marks[marks.length - 1].to)
           )
         }
       }
@@ -79,7 +84,9 @@ export const renderLinks = ViewPlugin.fromClass(class {
   }
 
   update (update: ViewUpdate): void {
-    this.decorations = hideLinkMarkers(update.view)
+    if (update.docChanged || update.viewportChanged || update.selectionSet) {
+      this.decorations = hideLinkMarkers(update.view)
+    }
   }
 }, {
   decorations: v => v.decorations

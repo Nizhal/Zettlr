@@ -9,56 +9,88 @@
     v-on:dblclick="handleDoubleClick"
     v-on:mousedown="$event.preventDefault()"
   >
-    <template v-for="(item, idx) in props.controls">
-      <ButtonControl
-        v-if="item.type === 'button' && item.visible !== false"
-        v-bind:key="idx"
-        v-bind:control="item"
-        v-bind:show-label="showLabels"
-        v-on:click="emit('click', item.id)"
-      ></ButtonControl>
-      <ToggleControl
-        v-if="item.type === 'toggle' && item.visible !== false"
-        v-bind:key="idx"
-        v-bind:control="item"
-        v-bind:show-label="showLabels"
-        v-on:toggle="emit('toggle', { id: item.id, state: $event })"
-      ></ToggleControl>
-      <ThreeWayToggle
-        v-if="item.type === 'three-way-toggle'"
-        v-bind:key="idx"
-        v-bind:control="item"
-        v-bind:show-labels="showLabels"
-        v-on:toggle="emit('toggle', { id: item.id, state: $event })"
-      >
-      </ThreeWayToggle>
-      <RingControl
-        v-if="item.type === 'ring' && item.visible !== false"
-        v-bind:key="idx"
-        v-bind:control="item"
-        v-bind:show-label="showLabels"
-        v-bind:progress-percent="item.progressPercent"
-        v-on:click="emit('click', item.id)"
-      ></RingControl>
-      <SearchControl
-        v-if="item.type === 'search'"
-        v-bind:key="idx"
-        v-bind:control="item"
-        v-bind:show-label="showLabels"
-        v-on:update:model-value="emit('search', $event)"
-      ></SearchControl>
-      <SpacerControl
-        v-if="item.type === 'spacer'"
-        v-bind:key="idx"
-        v-bind:control="item"
-      ></SpacerControl>
-      <TextControl
-        v-if="item.type === 'text' && item.visible !== false"
-        v-bind:key="idx"
-        v-bind:control="item"
-        v-on:click="emit('click', item.id)"
-      ></TextControl>
-    </template>
+    <button
+      v-if="canScroll"
+      class="toolbar-overflow left"
+      v-on:click="scrollLeft"
+    >
+      <cds-icon shape="step-forward-2" flip="horizontal"></cds-icon>
+    </button>
+    <div
+      ref="scrollArea"
+      class="toolbar-scroll"
+      v-on:scroll="checkOverflow"
+    >
+      <template v-for="(item, idx) in props.controls">
+        <ButtonControl
+          v-if="item.type === 'button' && item.visible !== false"
+          v-bind:key="idx"
+          v-bind:control="item"
+          v-bind:show-label="showLabels"
+          v-bind:button-text="item.buttonText"
+          v-on:click="emit('click', item.id)"
+        ></ButtonControl>
+        <ToggleControl
+          v-if="item.type === 'toggle' && item.visible !== false"
+          v-bind:key="idx"
+          v-bind:control="item"
+          v-bind:show-label="showLabels"
+          v-on:toggle="emit('toggle', { id: item.id, state: $event })"
+        ></ToggleControl>
+        <ThreeWayToggle
+          v-if="item.type === 'three-way-toggle'"
+          v-bind:key="idx"
+          v-bind:control="item"
+          v-bind:show-labels="showLabels"
+          v-on:toggle="emit('toggle', { id: item.id, state: $event })"
+        >
+        </ThreeWayToggle>
+        <RingControl
+          v-if="item.type === 'ring' && item.visible !== false"
+          v-bind:key="idx"
+          v-bind:control="item"
+          v-bind:show-label="showLabels"
+          v-bind:progress-percent="item.progressPercent"
+          v-on:click="emit('click', item.id)"
+        ></RingControl>
+        <SearchControl
+          v-if="item.type === 'search'"
+          v-bind:key="idx"
+          v-bind:control="item"
+          v-bind:show-label="showLabels"
+          v-on:update:model-value="emit('search', $event)"
+        ></SearchControl>
+        <SpacerControl
+          v-if="item.type === 'spacer'"
+          v-bind:key="idx"
+          v-bind:control="item"
+        ></SpacerControl>
+        <TextControl
+          v-if="item.type === 'text' && item.visible !== false"
+          v-bind:key="idx"
+          v-bind:control="item"
+          v-on:click="emit('click', item.id)"
+        ></TextControl>
+        <IrisIndicator
+          v-if="item.type === 'iris-indicator' && item.visible !== false"
+          v-bind:id="item.id"
+          v-bind:key="idx"
+          v-bind:tasks-aborted="item.tasksAborted"
+          v-bind:tasks-failed="item.tasksFailed"
+          v-bind:tasks-in-progress="item.tasksInProgress"
+          v-bind:tasks-success="item.tasksSuccess"
+          v-on:click="emit('click', item.id)"
+        >
+        </IrisIndicator>
+      </template>
+    </div>
+    <button
+      v-if="canScroll"
+      class="toolbar-overflow right"
+      v-on:click="scrollRight"
+    >
+      <cds-icon shape="step-forward-2"></cds-icon>
+    </button>
   </div>
 </template>
 
@@ -84,11 +116,12 @@ import ThreeWayToggle, { type ToolbarThreeWayControl } from './toolbar-controls/
 import SearchControl, { type ToolbarSearchControl } from './toolbar-controls/SearchControl.vue'
 import SpacerControl, { type ToolbarSpacerControl } from './toolbar-controls/SpacerControl.vue'
 import TextControl, { type ToolbarTextControl } from './toolbar-controls/TextControl.vue'
-import { onMounted, ref } from 'vue'
+import { onMounted, onBeforeUnmount, ref } from 'vue'
+import IrisIndicator, { type IrisIndicatorControl } from '../IrisIndicator.vue'
 
 export type ToolbarControl = ToolbarButtonControl|RingProgressButtonControl|
 ToolbarSearchControl|ToolbarSpacerControl|ToolbarTextControl|
-ToolbarThreeWayControl|ToolbarToggleControl
+ToolbarThreeWayControl|ToolbarToggleControl|IrisIndicatorControl
 
 const ipcRenderer = window.ipc
 
@@ -105,6 +138,28 @@ const emit = defineEmits<{
 
 const hasRTLTrafficLights = ref<boolean>(false)
 
+const scrollArea = ref<HTMLDivElement|null>(null)
+const canScroll = ref(false)
+// To account for really small differences between `scrollWidth` and `clientWidth`
+// (sometimes only fractions of a pixel), add a small additional tolerance to
+// `clientWidth` to prevent erroneously displaying of the scroll buttons.
+const clientWidthTolerance = 5
+
+function checkOverflow () {
+  if (scrollArea.value) {
+    const sa = scrollArea.value
+    canScroll.value = sa.scrollWidth > (sa.clientWidth + clientWidthTolerance)
+  }
+}
+
+function scrollLeft () {
+  scrollArea.value?.scrollBy({ left: -100, behavior: 'smooth' })
+}
+
+function scrollRight () {
+  scrollArea.value?.scrollBy({ left: 100, behavior: 'smooth' })
+}
+
 onMounted(() => {
   // Make sure that (on macOS) we have the correct spacing of the toolbar.
   ipcRenderer.on('window-controls', (event, message) => {
@@ -116,6 +171,13 @@ onMounted(() => {
 
   // Also send an initial request
   ipcRenderer.send('window-controls', { command: 'get-traffic-lights-rtl' })
+
+  checkOverflow()
+  window.addEventListener('resize', checkOverflow)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', checkOverflow)
 })
 
 function handleDoubleClick (event: MouseEvent): void {
@@ -131,11 +193,35 @@ function handleDoubleClick (event: MouseEvent): void {
 <style lang="less">
 body div#toolbar {
   height: 40px;
-  padding: 0px 10px;
+  padding: 5px 10px;
   display: flex;
-  align-items: center;
-  justify-content: space-around;
-  gap: 10px;
+  justify-content: space-between;
+  position: relative;
+
+  .toolbar-scroll {
+    display: flex;
+    gap: 5px;
+    flex: 1;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
+
+  button cds-icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .toolbar-overflow {
+    width: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
 
   div.spacer {
     .size-1x { flex-grow: 1; }
@@ -145,6 +231,7 @@ body div#toolbar {
 
   div.toolbar-group {
     text-align: center;
+    display: flex;
 
     span.toolbar-label {
       display: block;
@@ -154,7 +241,7 @@ body div#toolbar {
   }
 
   button {
-    flex-grow: 1;
+    cursor: pointer;
   }
 }
 
@@ -165,7 +252,7 @@ body.darwin {
   div#toolbar {
     // On macOS, there is no titlebar, and as such we need to make the toolbar draggable
     -webkit-app-region: drag;
-    & > * { -webkit-app-region: no-drag; }
+    button, .toolbar-text { -webkit-app-region: no-drag; }
 
     height: @toolbar-height;
     font-size: @font-size;
@@ -187,7 +274,7 @@ body.darwin {
       border: none;
       padding: 4px 8px;
 
-      &:hover {
+      &:hover, &.toolbar-overflow {
         background-color: rgb(230, 230, 230);
       }
     }
@@ -199,8 +286,8 @@ body.darwin {
       background-color: rgb(51, 51, 51);
       color: rgb(172, 172, 172);
 
-      button:hover {
-        background-color: rgb(60, 60, 60,);
+      button:hover, button.toolbar-overflow {
+        background-color: rgb(60, 60, 60);
       }
 
       &:window-inactive {
@@ -226,7 +313,7 @@ body.win32 {
       border: none;
       padding: 4px 8px;
 
-      &:hover {
+      &:hover, &.toolbar-overflow {
         background-color: rgb(230, 230, 230);
       }
     }
@@ -238,10 +325,10 @@ body.win32 {
       background-color: rgb(51, 51, 51);
       color: rgb(172, 172, 172);
 
-      button{
+      button {
         color: white;
 
-        &:hover {
+        &:hover, &.toolbar-overflow {
           background-color: rgb(60, 60, 60,);
         }
       }
@@ -274,7 +361,7 @@ body.linux {
       height: 25px;
       margin: 0 4px;
 
-      &:hover {
+      &:hover, &.toolbar-overflow {
         background-color: rgb(230, 230, 230);
       }
     }
@@ -289,7 +376,7 @@ body.linux {
       button{
         color: white;
 
-        &:hover {
+        &:hover, &.toolbar-overflow {
           background-color: rgb(60, 60, 60,);
         }
       }

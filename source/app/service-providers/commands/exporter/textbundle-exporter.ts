@@ -17,7 +17,7 @@ import {
   createWriteStream as writeStream
 } from 'fs'
 import path from 'path'
-import archiver from 'archiver'
+import { ZipArchive } from 'archiver'
 import { rimraf } from 'rimraf'
 import isFile from '@common/util/is-file'
 import type { ExporterOptions, ExporterPlugin, ExporterOutput, ExporterAPI } from './types'
@@ -48,9 +48,13 @@ export const plugin: ExporterPlugin = async function (options: ExporterOptions, 
       options.profile.writer === 'textpack',
       path.basename(sourceFiles[0])
     )
-  } catch (err: any) {
+  } catch (err: unknown) {
     output.code = 1
-    output.stderr.push(err.message)
+    if (err instanceof Error) {
+      output.stderr.push(err.message)
+    } else {
+      output.stderr.push('Unknown error')
+    }
   }
 
   return output
@@ -98,7 +102,7 @@ async function makeTextbundle (sourceFile: string, targetFile: string, textpack:
 
   // Read in the file and replace image paths, if applicable
   let content = await fs.readFile(sourceFile, 'utf8')
-  content = content.replace(imgRE, (match, url) => {
+  content = content.replace(imgRE, (match: string, url: string) => {
     const absPath = path.resolve(dirName, url)
 
     // We only care about images that are currently present on the filesystem.
@@ -139,7 +143,7 @@ async function makeTextbundle (sourceFile: string, targetFile: string, textpack:
       const packFile = targetFile.replace('.textbundle', '.textpack')
       const stream = writeStream(packFile)
       // Create a Zip file with compression 9
-      const archive = archiver('zip', { zlib: { level: 9 } })
+      const archive = new ZipArchive({ zlib: { level: 9 } })
       // Throw the error for the engine to capture
       archive.on('error', (err) => {
         reject(err)

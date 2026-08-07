@@ -15,58 +15,35 @@
 
 // The autocorrect plugin is basically just a keymap that listens to spaces and enters
 import { syntaxTree } from '@codemirror/language'
-import { EditorSelection, type ChangeSpec, type EditorState } from '@codemirror/state'
+import { EditorSelection, type ChangeSpec } from '@codemirror/state'
 import { type Command, type EditorView } from '@codemirror/view'
 import { configField } from '../util/configuration'
+import { insertNewlineAndIndent, isolateHistory } from '@codemirror/commands'
+import { insertNewlineContinueMarkup } from '@codemirror/lang-markdown'
+import { nodeAtPos } from '../util/node-in-selection'
 
 // These characters can be directly followed by a starting magic quote
 const startChars = ' ([{-–—\n\r\t\v\f/\\'
 
-/**
- * Given the editor state and a position, this function returns whether the
- * position sits within a node that is protected from autocorrect. In those
- * cases, no autocorrection will be applied, regardless of whether there is a
- * suitable candidate.
- *
- * @param   {EditorState}  state  The state
- * @param   {number}       pos    The position to check
- *
- * @return  {boolean}             True if the position touches a protected node.
- */
-function posInProtectedNode (state: EditorState, pos: number): boolean {
-  const PROTECTED_NODES = [
-    'InlineCode', // `code`
-    'Comment', 'CommentBlock', // <!-- comment -->
-    'FencedCode', 'CodeText', // Code block
-    'HorizontalRule', // --- and ***
-    'YAMLFrontmatter',
-    'HTMLTag', 'HTMLBlock' // HTML elements
-  ]
+const PROTECTED_NODES = [
+  'InlineCode', // `code`
+  'Comment', 'CommentBlock', // <!-- comment -->
+  'FencedCode', 'CodeText', // Code block
+  'HorizontalRule', // --- and ***
+  'YAMLFrontmatter',
+  'HTMLTag', 'HTMLBlock' // HTML elements
+]
 
-  let node = syntaxTree(state).resolveInner(pos, -1)
-
-  while (node.parent !== null) {
-    if (PROTECTED_NODES.includes(node.type.name)) {
-      return true
-    }
-
-    node = node.parent
+// If Autocorrect is active, handles the potential text replacement
+export const handleReplacement: Command = (target: EditorView): boolean => {
+  // The config field is only present in the main editor, not in the assets
+  // manager code editors or elsewhere.
+  const config = target.state.field(configField, false)
+  if (config === undefined) {
+    return false
   }
 
-  // Neither the node itself, nor any of its parents, are protected.
-  return false
-}
-
-/**
- * If AutoCorrect is active, this handles a (potential) replacement on Space or
- * Enter.
- *
- * @param   {EditorView}  view  The editor's view
- *
- * @return  {boolean}           Always returns false to make Codemirror add the Space/Enter
- */
-export function handleReplacement (view: EditorView): boolean {
-  const { autocorrect } = view.state.field(configField)
+  const { autocorrect } = config
   if (!autocorrect.active || autocorrect.replacements.length === 0) {
     return false
   }
@@ -79,37 +56,43 @@ export function handleReplacement (view: EditorView): boolean {
   const maxKeyLength = replacements[0].key.length
   const changes: ChangeSpec[] = []
 
-  for (const range of view.state.selection.ranges) {
+  const tree = syntaxTree(target.state)
+  for (const range of target.state.selection.ranges) {
     // Ignore selections (only cursors)
     if (!range.empty) {
       continue
     }
 
+    // Offset by 1 since this occurs after the transaction to insert
+    // the newline or space
+    let pos = range.from - 1
+
     // Ignore those cursors that are inside protected nodes
-    if (posInProtectedNode(view.state, range.from)) {
+    if (nodeAtPos(pos, tree, PROTECTED_NODES, -1) != null) {
       continue
     }
 
     // Leave --- and ... lines (YAML frontmatter as well as horizontal rules)
     // We have investigated finding these as protected nodes. However, '---' in
     // the first line is not parsed as any type.
-    const line = view.state.doc.lineAt(range.from)
+    const line = target.state.doc.lineAt(pos)
     if ([ '---', '...' ].includes(line.text)) {
       continue
     }
 
-    const from = Math.max(range.from - maxKeyLength, 0)
-    const slice = view.state.sliceDoc(from, range.from)
+    const from = Math.max(pos - maxKeyLength, 0)
+    const slice = target.state.sliceDoc(from, pos)
+
     for (const { key, value } of replacements) {
       if (slice.endsWith(key)) {
-        const startOfReplacement = range.from - key.length
-        if (posInProtectedNode(view.state, startOfReplacement)) {
+        const startOfReplacement = pos - key.length
+        if (nodeAtPos(startOfReplacement, tree, PROTECTED_NODES, -1) != null) {
           break // `range.from` is not in a protected area, but start is.
         }
 
         const charBefore = startOfReplacement === 0
           ? ' ' // Assume a space which makes below's code simpler
-          : view.state.sliceDoc(startOfReplacement - 1, startOfReplacement)
+          : target.state.sliceDoc(startOfReplacement - 1, startOfReplacement)
 
         if (autocorrect.matchWholeWords && !/\W/.test(charBefore)) {
           // We should match whole words, but the replacement is
@@ -117,15 +100,52 @@ export function handleReplacement (view: EditorView): boolean {
           break
         }
 
-        changes.push({ from: startOfReplacement, to: range.from, insert: value })
+        changes.push({ from: startOfReplacement, to: pos, insert: value })
         break // Do not check the other possible replacements
       }
     }
   }
 
-  view.dispatch({ changes })
+  if (changes.length > 0) {
+    // Isolate the transaction in the undo-history so that a user
+    // can override the replacement without removed the space/newline
+    target.dispatch({ changes, annotations: isolateHistory.of('full') })
 
-  // Indicate that we did not handle the key, making Codemirror add the key
+    // Indicate a replacement happened
+    return true
+  }
+
+  return false
+}
+
+// Space key handling for autocorrect
+export const handleAutocorrectSpace: Command = (target: EditorView) => {
+  // By dispatching the Space transaction first, the replacement
+  // appears after it in the undo history, providing better undo UX.
+  target.dispatch(target.state.replaceSelection(' '))
+
+  handleReplacement(target)
+
+  // Always return `true` due to dispatching `replaceSelection`
+  // even if `handleReplacement` fails.
+  return true
+}
+
+// Enter key handling for autocorrect
+export const handleAutocorrectEnter: Command = (target: EditorView) => {
+  // By dispatching the Enter transaction first, the replacement
+  // appears after it in the undo history, providing better undo UX.
+  // NOTE: We first need to invoke `insertNewlineContinueMarkup` and, if that
+  // returns false, immediately invoke `insertNewlineAndIndent` to mimick the
+  // Enter overloads in the default keymap and ensure lists are continued.
+  if (insertNewlineContinueMarkup(target) || insertNewlineAndIndent(target)) {
+    handleReplacement(target)
+
+    // Always return `true` due to dispatching `insertNewlineContinueMarkup`,
+    // even if `handleReplacement` fails.
+    return true
+  }
+
   return false
 }
 
@@ -137,7 +157,14 @@ export function handleReplacement (view: EditorView): boolean {
  * @return  {boolean}           Whether the function has replaced a quote
  */
 export function handleBackspace (view: EditorView): boolean {
-  const autocorrect = view.state.field(configField).autocorrect
+  // The config field is only present in the main editor, not in the assets
+  // manager code editors or elsewhere.
+  const config = view.state.field(configField, false)
+  if (config === undefined) {
+    return false
+  }
+
+  const { autocorrect } = config
   if (!autocorrect.active) {
     return false
   }
@@ -151,7 +178,7 @@ export function handleBackspace (view: EditorView): boolean {
   const changes: ChangeSpec[] = []
 
   for (const range of view.state.selection.ranges) {
-    if (range.from === 0) {
+    if (range.from === 0 || !range.empty) {
       continue
     }
 
@@ -179,7 +206,14 @@ export function handleBackspace (view: EditorView): boolean {
  */
 export function handleQuote (quote: string): Command {
   return function (view: EditorView): boolean {
-    const autocorrect = view.state.field(configField).autocorrect
+    // The config field is only present in the main editor, not in the assets
+    // manager code editors or elsewhere.
+    const config = view.state.field(configField, false)
+    if (config === undefined) {
+      return false
+    }
+
+    const { autocorrect } = config
     if (!autocorrect.active) {
       return false
     }
@@ -188,12 +222,14 @@ export function handleQuote (quote: string): Command {
     const secondary = autocorrect.magicQuotes.secondary.split('…')
     const quotes = (quote === '"') ? primary : secondary
 
+    const tree = syntaxTree(view.state)
+
     const transaction = view.state.changeByRange((range) => {
       // NOTE we're running through the hassle of definitely inserting quotes as
       // otherwise the quote character would be swallowed, even in "protected"
       // areas of the document.
-      const isFromProtected = posInProtectedNode(view.state, range.from)
-      const isToProtected = posInProtectedNode(view.state, range.to)
+      const isFromProtected = nodeAtPos(range.from, tree, PROTECTED_NODES, -1) != null
+      const isToProtected = nodeAtPos(range.to, tree, PROTECTED_NODES, -1) != null
 
       if (range.empty) {
         // Check the character before and insert an appropriate quote

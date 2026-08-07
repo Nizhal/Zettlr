@@ -23,9 +23,21 @@ import { PANDOC_WRITERS } from '@common/pandoc-util/pandoc-maps'
 import { type PandocProfileMetadata } from '@providers/assets'
 import { runShellCommand } from './exporter/run-shell-command'
 import { showNativeNotification } from '@common/util/show-notification'
+import type { AppServiceContainer } from 'source/app/app-service-container'
+
+export interface CustomExportIPCAPI {
+  displayName: string
+  file: string
+}
+
+export interface ExportIPCAPI {
+  file: string,
+  profile: PandocProfileMetadata,
+  exportTo: string
+}
 
 export default class Export extends ZettlrCommand {
-  constructor (app: any) {
+  constructor (app: AppServiceContainer) {
     super(app, [ 'export', 'custom-export' ])
   }
 
@@ -36,10 +48,15 @@ export default class Export extends ZettlrCommand {
     * @param  {Object} arg An object containing hash and wanted extension.
     * @return {Boolean}     Whether or not the call succeeded.
     */
-  async run (evt: string, arg: any): Promise<void> {
+  async run (evt: string, arg: CustomExportIPCAPI|ExportIPCAPI): Promise<void> {
     // Custom export
     if (evt === 'custom-export') {
-      const { displayName, file } = arg as { displayName: string, file: string }
+      if (!('displayName' in arg)) {
+        throw new Error('Unexpected payload received for custom-export event.')
+      }
+
+      const { displayName, file } = arg
+
       const commands = this._app.config.get().export.customCommands
       const foundCommand = commands.find(c => c.displayName === displayName)
       if (foundCommand === undefined) {
@@ -47,26 +64,44 @@ export default class Export extends ZettlrCommand {
       }
 
       this._app.log.info(`[Export] Running custom export command ${displayName} on file ${file} ...`)
+      const task = this._app.lrt.registerTask(trans('Exporting file "%s"', path.basename(file)), trans('Exporting using custom command %s', displayName))
       const cwd = path.dirname(file)
-      const output = await runShellCommand(foundCommand.command, [`"${file}"`], cwd)
 
-      if (output.code !== 0) {
-        this._app.log.error(`[Export] Custom export ${displayName} failed with code ${output.code}`, output.stderr)
-        const title = trans('Export failed')
-        const message = trans('An error occurred during export: %s', `Custom Command exited with code ${output.code}`)
-        this._app.windows.showErrorMessage(title, message, output.stderr)
-      } else {
-        this._app.log.info(`[Export] File ${path.basename(file)} exported successfully.`)
-      }
-
-      if (output.stdout.length > 0) {
-        this._app.log.info('This custom export run produced additional output.', output.stdout)
+      try {
+        const output = await runShellCommand(foundCommand.command, [`'${file}'`], cwd)
+  
+        if (output.code !== 0) {
+          this._app.log.error(`[Export] Custom export ${displayName} failed with code ${output.code}`, output.stderr)
+          const title = trans('Export failed')
+          const message = trans('An error occurred during export: %s', `Custom Command exited with code ${output.code}`)
+          this._app.windows.showErrorMessage(title, message, output.stderr)
+          task.endTask('error', new Error(message))
+        } else {
+          this._app.log.info(`[Export] File ${path.basename(file)} exported successfully.`)
+          task.update({ info: trans('Exported file successfully.') })
+          task.endTask('success')
+        }
+  
+        if (output.stdout.length > 0) {
+          this._app.log.info('This custom export run produced additional output.', output.stdout)
+        }
+      } catch (err: unknown) {
+        if (!(err instanceof Error)) {
+          this._app.log.error(`[Export] Custom export ${displayName} failed with an unknown error`, err)
+          task.endTask('error', new Error('Unknown error'))
+        } else {
+          this._app.log.error(`[Export] Custom export ${displayName} failed with an error: ${err.message}`, err)
+          task.endTask('error', err)
+        }
       }
       return // Done
     }
 
     // Regular export
-    const { file, profile, exportTo } = arg as { file: string, profile: PandocProfileMetadata, exportTo: string }
+    if (!('profile' in arg) || !('exportTo' in arg)) {
+      throw new Error('Unexpected payload received for export event.')
+    }
+    const { file, profile, exportTo } = arg
 
     const exporterOptions: ExporterOptions = {
       profile,
@@ -88,7 +123,7 @@ export default class Export extends ZettlrCommand {
     }
 
     // We must have an absolute path given in file
-    const fileDescriptor = this._app.workspaces.findFile(file)
+    const fileDescriptor = await this._app.fsal.getDescriptorForAnySupportedFile(file)
     if (fileDescriptor !== undefined) {
       // If we have a cached version, we already have a file to export.
       // Otherwise, use the regular one from disk.
@@ -105,7 +140,7 @@ export default class Export extends ZettlrCommand {
       // key zettlr.pandoc_working_dir: /path/to/directory
       if (fileDescriptor.type === 'file' &&
       typeof fileDescriptor.frontmatter?.zettlr?.pandoc_working_dir === 'string' &&
-      await this._app.fsal.isDir(fileDescriptor.frontmatter.zettlr.pandoc_working_dir)) {
+      await this._app.fsal.isDir(fileDescriptor.frontmatter.zettlr.pandoc_working_dir as string)) {
         exporterOptions.cwd = fileDescriptor.frontmatter.zettlr.pandoc_working_dir
       }
 
@@ -135,6 +170,8 @@ export default class Export extends ZettlrCommand {
       return
     }
 
+    const task = this._app.lrt.registerTask(trans('Exporting file %s', path.basename(file)), trans('Exporting using profile %s', profile.name))
+
     // Call the exporter. Don't throw the "big" error as this is single-file export
     try {
       this._app.log.verbose(`[Exporter] Exporting ${exporterOptions.sourceFiles.length} files to ${exporterOptions.targetDirectory}`)
@@ -142,15 +179,27 @@ export default class Export extends ZettlrCommand {
       if (output.code === 0) {
         this._app.log.info(`Successfully exported file to ${output.targetFile}`)
         const readableFormat = (profile.writer in PANDOC_WRITERS) ? PANDOC_WRITERS[profile.writer] : profile.writer
-        showNativeNotification(trans('Exporting to %s', readableFormat))
+        showNativeNotification(trans('Exported to %s', readableFormat))
+        task.update({
+          title: trans('File %s has been exported', path.basename(file)),
+          info: trans('File has been exported to %s', readableFormat),
+          successInteraction: () => {
+            shell.openPath(output.targetFile).catch(err => {
+              this._app.log.error(`[Project] Could not open file '${output.targetFile}'`, err)
+            })
+          }
+        })
+        task.endTask('success')
 
         // In case of a textbundle/pack it's a folder, else it's a file
-        if ([ 'textbundle', 'textpack' ].includes(arg.profile.writer)) {
-          shell.showItemInFolder(output.targetFile)
-        } else {
-          const potentialError = await shell.openPath(output.targetFile)
-          if (potentialError !== '') {
-            throw new Error('Could not open exported file: ' + potentialError)
+        if (this._app.config.get().export.autoOpenExportedFiles) {
+          if ([ 'textbundle', 'textpack' ].includes(profile.writer)) {
+            shell.showItemInFolder(output.targetFile)
+          } else {
+            const potentialError = await shell.openPath(output.targetFile)
+            if (potentialError !== '') {
+              throw new Error('Could not open exported file: ' + potentialError)
+            }
           }
         }
       } else {
@@ -158,10 +207,18 @@ export default class Export extends ZettlrCommand {
         const message = trans('An error occurred on export: %s', `Pandoc exited with code ${output.code}`)
         const contents = output.stderr.join('\n')
         this._app.windows.showErrorMessage(title, message, contents)
+        task.endTask('error', new Error(`Export failed with status ${output.code}`))
       }
-    } catch (err: any) {
-      this._app.windows.showErrorMessage(err.message, err.message)
-      this._app.log.error(err.message, err)
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        const message: string = err.message
+        this._app.windows.showErrorMessage(trans('Export error'), message)
+        this._app.log.error(message, err)
+        task.endTask('error', err)
+      } else {
+        this._app.log.error('Export failed with an unknown error.', err)
+        task.endTask('error', new Error('Unknown error'))
+      }
     }
   }
 }

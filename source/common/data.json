@@ -1,16 +1,4 @@
 {
-    "filetypes": [
-        ".md",
-        ".rmd",
-        ".markdown",
-        ".txt",
-        ".tex",
-        ".mdx"
-    ],
-    "ignoreDirs": [
-        ".+?\\.app",
-        ".+?\\.textbundle"
-    ],
     "import_files": [
         [ "Markdown",                          "md", "markdown", "rmd", "mdx" ],
         [ "DocBook",                           "docbook" ],

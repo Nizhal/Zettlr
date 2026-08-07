@@ -16,6 +16,7 @@
 
 import {
   BrowserWindow,
+  dialog,
   type BrowserWindowConstructorOptions
 } from 'electron'
 import type { WindowPosition } from './types'
@@ -66,6 +67,7 @@ export default function createMainWindow (
   window.loadURL(effectiveUrl.toString())
     .catch(e => {
       logger.error(`Could not load URL ${MAIN_WINDOW_WEBPACK_ENTRY}: ${e.message as string}`, e)
+      dialog.showErrorBox('Could not open window', `Could not open main Window: ${e.message as string}`)
     })
 
   // EVENT LISTENERS
@@ -105,6 +107,13 @@ export default function createMainWindow (
     }
   })
 
+  window.on('enter-full-screen', () => {
+    window.webContents.send('window-controls', { command: 'fullscreen', payload: true })
+  })
+  window.on('leave-full-screen', () => {
+    window.webContents.send('window-controls', { command: 'fullscreen', payload: false })
+  })
+
   // Emitted when the user wants to close the window.
   window.on('close', (event) => {
     let ses = window.webContents.session
@@ -113,8 +122,7 @@ export default function createMainWindow (
       storages: [
         'cookies', // Nobody needs cookies except for downloading pandoc etc
         'localstorage',
-        'shadercache', // Should never contain anything
-        'websql'
+        'shadercache' // Should never contain anything
       ]
     }).catch(e => {
       logger.error(`Could not clear session data: ${e.message as string}`, e)

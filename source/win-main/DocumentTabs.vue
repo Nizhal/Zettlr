@@ -46,7 +46,7 @@
           role="button"
         >
           <cds-icon v-if="file.pinned" shape="pin"></cds-icon>
-          {{ getTabText(file) }}
+          {{ getDocumentTitle(file) }}
         </span>
         <span v-if="hasDuplicate(file)" class="deduplicate">{{ getDirBasename(file) }}</span>
         <span
@@ -88,13 +88,20 @@
  * END HEADER
  */
 
-import displayTabsContextMenu, { displayTabbarContext } from './tabs-context'
+import { displayTabbarContext } from './tabs-context'
 import tippy from 'tippy.js'
 import { nextTick, computed, ref, watch, onMounted, onBeforeUnmount, onUpdated } from 'vue'
-import { useConfigStore, useDocumentTreeStore, useWorkspacesStore } from 'source/pinia'
+import { useDocumentTreeStore } from 'source/pinia'
 import type { LeafNodeJSON, OpenDocument } from '@dts/common/documents'
 import { pathBasename, pathDirname } from '@common/util/renderer-path-polyfill'
 import type { DocumentManagerIPCAPI } from 'source/app/service-providers/documents'
+import type { WindowControlsIPCAPI } from 'source/app/service-providers/windows'
+import { useWorkspaceStore } from 'source/pinia/workspace-store'
+import type { AnyMenuItem } from 'source/common/modules/window-register/application-menu-helper'
+import { trans } from 'source/common/i18n-renderer'
+import showPopupMenu from 'source/common/modules/window-register/application-menu-helper'
+import { closeFile } from './file-manager/util/item-composable'
+import getDocumentTitle from './util/get-document-title'
 
 const ipcRenderer = window.ipc
 
@@ -105,7 +112,9 @@ const props = defineProps<{
 
 const showScrollers = ref<boolean>(false)
 const resizeObserver = new ResizeObserver(() => {
-  maybeActivateScrollers()
+  requestAnimationFrame(() => {
+    maybeActivateScrollers()
+  })
 })
 
 // Is there a document being dragged over this tabbar?
@@ -114,13 +123,9 @@ const documentTabDragOver = ref<boolean>(false)
 // dropzone)
 const documentTabDragOverOrigin = ref<boolean>(false)
 
-const workspacesStore = useWorkspacesStore()
-const configStore = useConfigStore()
+const workspaceStore = useWorkspaceStore()
 const documentTreeStore = useDocumentTreeStore()
 
-const useH1 = computed(() => configStore.config.fileNameDisplay.includes('heading'))
-const useTitle = computed(() => configStore.config.fileNameDisplay.includes('title'))
-const displayMdExtensions = computed(() => configStore.config.display.markdownFileExtensions)
 const container = ref<HTMLDivElement|null>(null)
 const node = computed<LeafNodeJSON|undefined>(() => documentTreeStore.paneData.find((leaf: LeafNodeJSON) => leaf.id === props.leafId))
 const openFiles = computed(() => node.value?.openFiles ?? [])
@@ -343,30 +348,10 @@ function scrollRight (): void {
   }
 }
 
-function getTabText (doc: OpenDocument): string {
-  // Returns a more appropriate tab text based on the user settings
-  const file = workspacesStore.getFile(doc.path)
-  if (file === undefined) {
-    return pathBasename(doc.path)
-  }
-
-  if (file.type !== 'file') {
-    return file.name
-  } else if (useTitle.value && file.yamlTitle !== undefined) {
-    return file.yamlTitle
-  } else if (useH1.value && file.firstHeading != null) {
-    return file.firstHeading
-  } else if (displayMdExtensions.value) {
-    return file.name
-  } else {
-    return file.name.replace(file.ext, '')
-  }
-}
-
 function hasDuplicate (doc: OpenDocument): boolean {
-  const focalTabname = getTabText(doc).toLowerCase()
+  const focalTabname = getDocumentTitle(doc).toLowerCase()
   const duplicates = openFiles.value.filter(doc => {
-    return getTabText(doc).toLowerCase() === focalTabname
+    return getDocumentTitle(doc).toLowerCase() === focalTabname
   })
 
   // NOTE that `doc` is also contained in `openFiles`, i.e. we should have 1
@@ -468,72 +453,141 @@ function handleTabbarContext (event: MouseEvent): void {
 }
 
 function handleContextMenu (event: MouseEvent, doc: OpenDocument): void {
-  const file = workspacesStore.getFile(doc.path)
-  if (file === undefined || file.type === 'other') {
+  const descriptor = workspaceStore.descriptorMap.get(doc.path)
+  if (descriptor === undefined || descriptor.type === 'directory') {
     return
   }
 
-  displayTabsContextMenu(event, file, doc, (clickedID: string) => {
-    if (clickedID === 'close-this') {
-      // Close only this
-      ipcRenderer.invoke('documents-provider', {
-        command: 'close-file',
-        payload: {
-          path: file.path,
-          leafId: props.leafId,
-          windowId: props.windowId
-        }
-      } as DocumentManagerIPCAPI).catch(e => console.error(e))
-    } else if (clickedID === 'close-others') {
-      // Close all files ...
-      for (const openFile of openFiles.value) {
-        if (openFile.path === file.path) {
-          continue // ... except this
-        }
+  const isMac = process.platform === 'darwin'
+  const isWin = process.platform === 'win32'
 
+  const items: AnyMenuItem[] = [
+    {
+      label: trans('Close tab'),
+      type: 'normal',
+      enabled: !doc.pinned,
+      action () {
         ipcRenderer.invoke('documents-provider', {
           command: 'close-file',
-          payload: {
-            path: openFile.path,
-            leafId: props.leafId,
-            windowId: props.windowId
-          }
-        } as DocumentManagerIPCAPI).catch(e => console.error(e))
+          payload: { path: descriptor.path, leafId: props.leafId, windowId: props.windowId }
+        } satisfies DocumentManagerIPCAPI).catch(e => console.error(e))
       }
-    } else if (clickedID === 'close-all') {
-      // Close all files
-      for (const openFile of openFiles.value) {
-        ipcRenderer.invoke('documents-provider', {
-          command: 'close-file',
-          payload: {
-            path: openFile.path,
-            leafId: props.leafId,
-            windowId: props.windowId
+    },
+    {
+      label: trans('Close other tabs'),
+      type: 'normal',
+      action () {
+        for (const openFile of openFiles.value) {
+          if (openFile.path === descriptor.path) {
+            continue
           }
-        } as DocumentManagerIPCAPI).catch(e => console.error(e))
-      }
-    } else if (clickedID === 'copy-filename') {
-      // Copy the filename to the clipboard
-      navigator.clipboard.writeText(file.name).catch(err => console.error(err))
-    } else if (clickedID === 'copy-path') {
-      // Copy path to the clipboard
-      navigator.clipboard.writeText(file.path).catch(err => console.error(err))
-    } else if (clickedID === 'copy-id' && file.type === 'file') {
-      // Copy the ID to the clipboard
-      navigator.clipboard.writeText(file.id).catch(err => console.error(err))
-    } else if (clickedID === 'pin-tab') {
-      // Toggle the pin status
-      ipcRenderer.invoke('documents-provider', {
-        command: 'set-pinned',
-        payload: {
-          path: doc.path,
-          leafId: props.leafId,
-          windowId: props.windowId,
-          pinned: !doc.pinned
+
+          ipcRenderer.invoke('documents-provider', {
+            command: 'close-file',
+            payload: { path: openFile.path, leafId: props.leafId, windowId: props.windowId }
+          } satisfies DocumentManagerIPCAPI).catch(e => console.error(e))
         }
-      } as DocumentManagerIPCAPI).catch(e => console.error(e))
-    }
-  })
+      }
+    },
+    {
+      label: trans('Close all tabs'),
+      type: 'normal',
+      enabled: !doc.pinned,
+      action () {
+        for (const openFile of openFiles.value) {
+          ipcRenderer.invoke('documents-provider', {
+            command: 'close-file',
+            payload: { path: openFile.path, leafId: props.leafId, windowId: props.windowId }
+          } satisfies DocumentManagerIPCAPI).catch(e => console.error(e))
+        }
+      }
+    },
+    {
+      type: 'separator'
+    },
+    {
+      label: trans('Move'),
+      type: 'submenu',
+      enabled: !doc.pinned,
+      submenu: [
+        {
+          label: trans('Move to start'),
+          enabled: !isFirstUnpinned(doc.path),
+          type: 'normal',
+          action () { moveFile(doc.path, 'start') }
+        },
+        {
+          label: trans('Move to end'),
+          enabled: !isLast(doc.path),
+          type: 'normal',
+          action () { moveFile(doc.path, 'end') }
+        }
+      ]
+    },
+    {
+      label: doc.pinned ? trans('Unpin tab') : trans('Pin tab'),
+      type: 'normal',
+      action () {
+        ipcRenderer.invoke('documents-provider', {
+          command: 'set-pinned',
+          payload: {
+            path: doc.path, leafId: props.leafId, windowId: props.windowId, pinned: !doc.pinned
+          }
+        } satisfies DocumentManagerIPCAPI).catch(e => console.error(e))
+      }
+    },
+    {
+      type: 'separator'
+    },
+    {
+      label: trans('Copy filename'),
+      type: 'normal',
+      action () {
+        navigator.clipboard.writeText(descriptor.name).catch(err => console.error(err))
+      }
+    },
+    {
+      label: trans('Copy path'),
+      type: 'normal',
+      action () {
+        navigator.clipboard.writeText(descriptor.path).catch(err => console.error(err))
+      }
+    },
+    {
+      label: isMac ? trans('Reveal in Finder') : isWin ? trans('Reveal in Explorer') : trans('Reveal in File Browser'),
+      type: 'normal',
+      action () {
+        ipcRenderer.send('window-controls', {
+          command: 'show-item-in-folder',
+          payload: { itemPath: descriptor.path }
+        } satisfies WindowControlsIPCAPI)
+      }
+    },
+    {
+      label: trans('Copy ID'),
+      type: 'normal',
+      enabled: descriptor.type === 'file' && descriptor.id !== '',
+      action () {
+        if (descriptor.type === 'file' && descriptor.id !== '') {
+          navigator.clipboard.writeText(descriptor.id).catch(err => console.error(err))
+        }
+      }
+    },
+    {
+      type: 'separator'
+    },
+    {
+      label: trans('Close file'),
+      type: 'normal',
+      enabled: workspaceStore.rootDescriptors.includes(descriptor),
+      action () {
+        closeFile(descriptor.path)
+      }
+    },
+  ]
+
+  const point = { x: event.clientX, y: event.clientY }
+  showPopupMenu(point, items)
 }
 
 /**
@@ -633,13 +687,18 @@ function handleDragEnd (event: DragEvent): void {
 
   // Here we just need to inspect the actual order and notify the main
   // process of that order.
-  const newOrder = []
+  const newOrder: string[] = []
   for (let i = 0; i < container.value.children.length; i++) {
     if (container.value.children[i].getAttribute('role') !== 'tab') {
       // There may be other children in the element, such as the scrollers
       continue
     }
     const fpath = container.value.children[i].getAttribute('data-path')
+    if (fpath === null) {
+      console.warn(`Could not determine file path of document tab index ${i}: data-path was empty.`)
+      continue
+    }
+
     newOrder.push(fpath)
   }
 
@@ -689,7 +748,80 @@ function handleDragEnd (event: DragEvent): void {
       windowId: props.windowId,
       leafId: props.leafId
     }
-  } as DocumentManagerIPCAPI)
+  } satisfies DocumentManagerIPCAPI)
+    .catch(err => console.error(err))
+}
+
+/**
+ * Returns true if the item identified by `itemPath` is the first non-pinned
+ * item in the tab list.
+ *
+ * @param   {string}   itemPath  The item
+ *
+ * @return  {boolean}            Whether it's the first unpinned.
+ */
+function isFirstUnpinned (itemPath: string): boolean {
+  const idx = getIndexInTabList(itemPath)
+  const firstUnpinned = openFiles.value.findIndex(doc => !doc.pinned)
+  return idx === firstUnpinned
+}
+
+/**
+ * Returns true if the item identified by `itemPath` is the last item in the
+ * open files.
+ *
+ * @param   {string}   itemPath  The item
+ *
+ * @return  {boolean}            Whether it's last
+ */
+function isLast (itemPath: string): boolean {
+  const idx = getIndexInTabList(itemPath)
+  return idx === openFiles.value.length - 1
+}
+
+/**
+ * Returns the index of the item identified by `itemPath` in the list of open
+ * files.
+ *
+ * @param   {string}  itemPath  The item
+ *
+ * @return  {number}            The item's index
+ */
+function getIndexInTabList (itemPath: string): number {
+  return openFiles.value.findIndex(doc => doc.path === itemPath)
+}
+
+/**
+ * Moves the file identified by `itemPath` to the first or last position in the
+ * tab bar, indicated by `where`.
+ *
+ * @param  {string}         itemPath  The item to move
+ * @param  {'start'|'end'}  where     Where to move the file to
+ */
+function moveFile (itemPath: string, where: 'start'|'end') {
+  const currentIdx = getIndexInTabList(itemPath)
+
+  if (currentIdx < 0) {
+    return
+  }
+
+  const newOrder = openFiles.value.map(f => f.path)
+  newOrder.splice(currentIdx, 1)
+
+  if (where === 'start') {
+    newOrder.unshift(itemPath)
+  } else {
+    newOrder.push(itemPath)
+  }
+
+  ipcRenderer.invoke('documents-provider', {
+    command: 'sort-open-files',
+    payload: {
+      newOrder,
+      windowId: props.windowId,
+      leafId: props.leafId
+    }
+  } satisfies DocumentManagerIPCAPI)
     .catch(err => console.error(err))
 }
 
@@ -876,7 +1008,7 @@ body.darwin {
 
     div[role="tab"] {
       text-align: center;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      font-family: system-ui, sans-serif;
       font-size: 11px;
       background-color: rgb(230, 230, 230);
       border-right: 1px solid rgb(200, 200, 200);

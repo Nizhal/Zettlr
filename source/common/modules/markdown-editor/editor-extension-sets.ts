@@ -23,7 +23,7 @@ import { bracketMatching, codeFolding, foldGutter, indentOnInput, indentUnit, St
 import { stex } from '@codemirror/legacy-modes/mode/stex'
 import { yaml } from '@codemirror/lang-yaml'
 import { search } from '@codemirror/search'
-import { Compartment, EditorState, type Extension } from '@codemirror/state'
+import { Compartment, EditorState, Prec, type Extension } from '@codemirror/state'
 import {
   drawSelection,
   EditorView,
@@ -35,20 +35,18 @@ import {
 import { autocomplete } from './autocomplete'
 import { codeSyntaxHighlighter, markdownSyntaxHighlighter } from './theme/syntax'
 import markdownParser from './parser/markdown-parser'
-import { syntaxExtensions } from './parser/syntax-extensions'
 import { defaultContextMenu } from './plugins/default-context-menu'
 import { readabilityMode } from './plugins/readability'
 import { hookDocumentAuthority } from './plugins/remote-doc'
 import { lintGutter, linter } from '@codemirror/lint'
 import { spellcheck } from './linters/spellcheck'
 import { mdLint } from './linters/md-lint'
-import { countField } from './plugins/statistics-fields'
+import { countField, countPlugin } from './plugins/statistics-fields'
 import { tocField } from './plugins/toc-field'
 import { typewriter } from './plugins/typewriter'
 import { formattingToolbar, footnoteHover, filePreview, urlHover } from './tooltips'
 import { type EditorConfiguration, configField } from './util/configuration'
 import { highlightRanges } from './plugins/highlight-ranges'
-import { jsonFolding } from './code-folding/json'
 import { markdownFolding } from './code-folding/markdown'
 import { json, jsonParseLinter } from '@codemirror/lang-json'
 import { softwrapVisualIndent } from './plugins/visual-indent'
@@ -61,19 +59,23 @@ import { renderers } from './renderers'
 import { mdPasteDropHandlers } from './plugins/md-paste-drop-handlers'
 import { footnoteGutter } from './plugins/footnote-gutter'
 import { yamlFrontmatterLint } from './linters/yaml-frontmatter-lint'
-import { darkMode } from './theme/dark-mode'
-import { themeBerlinLight, themeBerlinDark } from './theme/berlin'
-import { themeBielefeldLight, themeBielefeldDark } from './theme/bielefeld'
-import { themeBordeauxLight, themeBordeauxDark } from './theme/bordeaux'
-import { themeFrankfurtLight, themeFrankfurtDark } from './theme/frankfurt'
-import { themeKarlMarxStadtLight, themeKarlMarxStadtDark } from './theme/karl-marx-stadt'
-import { mainOverride } from './theme/main-override'
+import {
+  mainThemes, darkMode, useDarkModeEditor,
+  themeBerlinLight, themeBerlinDark,
+  themeBielefeldLight, themeBielefeldDark,
+  themeBordeauxLight, themeBordeauxDark,
+  themeFrankfurtLight, themeFrankfurtDark,
+  themeKarlMarxStadtLight, themeKarlMarxStadtDark
+} from './theme'
 import { highlightWhitespace } from './plugins/highlight-whitespace'
+import { showLineNumbers } from './plugins/line-numbers'
 import { tagClasses } from './plugins/tag-classes'
 import { autocompleteTriggerCharacter } from './autocomplete/snippets'
-import { defaultKeymap } from './keymaps/default'
 import { vimPlugin } from './plugins/vim-mode'
 import { projectInfoField } from './plugins/project-info-field'
+import { headingGutter } from './renderers/render-headings'
+import { citationTooltips } from './tooltips/citations'
+import { zettlrKeymap } from './keymaps'
 
 /**
  * This interface describes the required properties which the extension sets
@@ -89,7 +91,7 @@ export interface CoreExtensionOptions {
     pushUpdates: (filePath: string, version: number, updates: Update[]) => Promise<boolean>
   }
   updateListener: (update: ViewUpdate) => void
-  domEventsListeners: DOMEventHandlers<any>
+  domEventsListeners: DOMEventHandlers<unknown>
 }
 
 /**
@@ -103,24 +105,24 @@ export const inputModeCompartment = new Compartment()
 export function getMainEditorThemes (): Record<EditorConfiguration['theme'], { lightThemes: Extension[], darkThemes: Extension[] }> {
   return {
     berlin: {
-      lightThemes: [ mainOverride, themeBerlinLight ],
-      darkThemes: [ mainOverride, themeBerlinDark ]
+      lightThemes: [ mainThemes, themeBerlinLight ],
+      darkThemes: [ mainThemes, themeBerlinDark ]
     },
     bielefeld: {
-      lightThemes: [ mainOverride, themeBielefeldLight ],
-      darkThemes: [ mainOverride, themeBielefeldDark ]
+      lightThemes: [ mainThemes, themeBielefeldLight ],
+      darkThemes: [ mainThemes, themeBielefeldDark ]
     },
     bordeaux: {
-      lightThemes: [ mainOverride, themeBordeauxLight ],
-      darkThemes: [ mainOverride, themeBordeauxDark ]
+      lightThemes: [ mainThemes, themeBordeauxLight ],
+      darkThemes: [ mainThemes, themeBordeauxDark ]
     },
     frankfurt: {
-      lightThemes: [ mainOverride, themeFrankfurtLight ],
-      darkThemes: [ mainOverride, themeFrankfurtDark ]
+      lightThemes: [ mainThemes, themeFrankfurtLight ],
+      darkThemes: [ mainThemes, themeFrankfurtDark ]
     },
     'karl-marx-stadt': {
-      lightThemes: [ mainOverride, themeKarlMarxStadtLight ],
-      darkThemes: [ mainOverride, themeKarlMarxStadtDark ]
+      lightThemes: [ mainThemes, themeKarlMarxStadtLight ],
+      darkThemes: [ mainThemes, themeKarlMarxStadtDark ]
     }
   }
 }
@@ -163,25 +165,26 @@ function getCoreExtensions (options: CoreExtensionOptions): Extension[] {
   const themes = getMainEditorThemes()
 
   return [
+    EditorView.cursorScrollMargin.of({ x: 50, y: 50 }), // Corresponds to the padding set to the MainEditor.vue for now
     // Both vim and emacs modes need to be included first, before any other
     // keymap.
     inputModeCompartment.of(inputMode),
     // Then, include the default keymap
-    defaultKeymap(),
-    darkMode({ darkMode: options.initialConfig.darkMode, ...themes[options.initialConfig.theme] }),
+    zettlrKeymap(options.initialConfig.shortcuts, options.initialConfig),
+    darkMode({ darkMode: useDarkModeEditor(options.initialConfig.darkMode, options.initialConfig.darkModeEditor), ...themes[options.initialConfig.theme] }),
     // CODE FOLDING
     codeFolding(),
-    foldGutter(),
+    Prec.low(foldGutter()), // The fold gutter should appear next to the text content
     // HISTORY
     history(),
     // SELECTIONS
     // Overrides the default browser selection drawing, allows styling
-    drawSelection({ drawRangeCursor: false, cursorBlinkRate: 1000 }),
+    drawSelection({ drawRangeCursor: false, cursorBlinkRate: 1200 }),
     highlightWhitespace(options.initialConfig.highlightWhitespace),
     dropCursor(),
     EditorState.allowMultipleSelections.of(true),
     // Ensure the cursor never completely sticks to the top or bottom of the editor
-    EditorView.scrollMargins.of(_view => { return { top: 30, bottom: 30 } }),
+    // EditorView.scrollMargins.of(_view => { return { top: 30, bottom: 30 } }),
     search({ top: true }), // Add a search
     // TAB SIZES/INDENTATION -> Depend on the configuration field
     EditorState.tabSize.from(configField, (val) => val.indentUnit),
@@ -190,8 +193,7 @@ function getCoreExtensions (options: CoreExtensionOptions): Extension[] {
     autoCloseBracketsConfig,
 
     // Allow configuration of the trigger character
-    autocompleteTriggerCharacter.of(':'),
-    // TODO: autocompleteTriggerCharacter.from(configField, val => val.FINDANAME),
+    autocompleteTriggerCharacter.from(configField, val => val.snippetAutocompleteTriggerCharacter),
 
     // Add the statusbar
     statusbar,
@@ -236,7 +238,7 @@ function getGenericCodeExtensions (options: CoreExtensionOptions): Extension[] {
     lineNumbers(),
     bracketMatching(),
     indentOnInput(),
-    codeSyntaxHighlighter()
+    codeSyntaxHighlighter(),
   ]
 }
 
@@ -311,11 +313,13 @@ export function getMarkdownExtensions (options: CoreExtensionOptions): Extension
     }),
     // ... which can then be styled with a highlighter
     markdownSyntaxHighlighter(),
-    syntaxExtensions, // Add our own specific syntax plugin
     renderers(options.initialConfig),
+    showLineNumbers(options.initialConfig.showMarkdownLineNumbers),
     mdLinterExtensions,
+    headingGutter,
     languageTool,
     // Some statistics we need for Markdown documents
+    countPlugin,
     countField,
     typewriter,
     distractionFree,
@@ -329,6 +333,7 @@ export function getMarkdownExtensions (options: CoreExtensionOptions): Extension
     footnoteGutter, // Should be after markdownFolding
     urlHover,
     filePreview,
+    citationTooltips,
     backgroundLayers, // Add a background behind inline code and code blocks
     defaultContextMenu, // A default context menu
     softwrapVisualIndent, // Always indent visually
@@ -338,20 +343,18 @@ export function getMarkdownExtensions (options: CoreExtensionOptions): Extension
 }
 
 /**
- * This public function returns a set of extensions required to display JSON
+ * This public function returns a set of extensions required to display LaTeX
  * documents in Zettlr editors. These include the core extensions, the generic
- * code extensions as well as the JSON syntax highlighter.
+ * code extensions as well as the LaTeX syntax highlighter.
  *
  * @param   {CoreExtensionOptions}  options  The default options
  *
- * @return  {Extension[]}                    An array of options for JSON files
+ * @return  {Extension[]}                    An array of options for LaTeX files
  */
-export function getJSONExtensions (options: CoreExtensionOptions): Extension[] {
+export function getTexExtensions (options: CoreExtensionOptions): Extension[] {
   return [
     ...getGenericCodeExtensions(options),
-    jsonFolding,
-    json(),
-    linter(jsonParseLinter())
+    StreamLanguage.define(stex)
   ]
 }
 
@@ -371,18 +374,20 @@ export function getYAMLExtensions (options: CoreExtensionOptions): Extension[] {
   ]
 }
 
+
 /**
- * This public function returns a set of extensions required to display LaTeX
+ * This public function returns a set of extensions required to display JSON
  * documents in Zettlr editors. These include the core extensions, the generic
- * code extensions as well as the LaTeX syntax highlighter.
+ * code extensions as well as the JSON syntax highlighter.
  *
  * @param   {CoreExtensionOptions}  options  The default options
  *
- * @return  {Extension[]}                    An array of options for LaTeX files
+ * @return  {Extension[]}                    An array of options for JSON files
  */
-export function getTexExtensions (options: CoreExtensionOptions): Extension[] {
+export function getJSONExtensions (options: CoreExtensionOptions): Extension[] {
   return [
     ...getGenericCodeExtensions(options),
-    StreamLanguage.define(stex)
+    json(),
+    linter(jsonParseLinter())
   ]
 }
